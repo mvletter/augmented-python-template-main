@@ -265,8 +265,24 @@ Complete the "After completion" checklist:
 
 4. **Commit all changes:**
    - Stage all modified files related to the feature
-   - Commit with message: `feat([scope]): [description]`
-   - Include Co-Authored-By trailer
+   - Commit with message: `feat([scope]): [description] ([spec-name])`
+   - Include SPEC reference in parentheses at end
+   
+   Example:
+   ```bash
+   git add -A
+   git commit -m "feat(auth): Add JWT authentication with refresh tokens (user-login)
+   
+   - Implemented token generation and validation
+   - Added refresh token endpoint
+   - All tests passing (87% coverage)
+   
+   ```
+   
+   Format breakdown:
+   - `feat([scope])`: Conventional commit type and scope
+   - `[description]`: Clear summary of what was built
+   - `([spec-name])`: Reference to the SPEC (e.g., user-login, payment-flow)
 
 5. **Update tracking:**
    - Update project.md: move from Active to Done
