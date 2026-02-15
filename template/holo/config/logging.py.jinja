@@ -1,0 +1,116 @@
+from typing import Any
+
+from pydantic import ConfigDict
+from pythonjsonlogger.core import RESERVED_ATTRS
+
+from holo.config.base import HoloSettings
+from holo.config.service import service_config
+
+
+class LoggingConfig(HoloSettings):
+    LEVEL: str = "INFO"
+    JSON: bool
+    {% if include_database %}
+    SQL: bool = False
+    {% endif %}
+
+    # You don't really need to worry about overriding these.
+    @property
+    def LOCAL_FORMAT(self) -> str:
+        """
+        Include span and trace id when tracing is enabled.
+        """
+        if service_config.TRACING and not service_config.TESTING:
+            return "%(asctime)s.%(msecs)dZ %(levelname)s %(name)s:%(funcName)s::%(lineno)d [trace_id=%(otelTraceID)s span_id=%(otelSpanID)s] - %(message)s"
+        return "%(asctime)s.%(msecs)dZ %(levelname)s %(name)s:%(funcName)s::%(lineno)d - %(message)s"
+
+    @property
+    def JSON_FORMAT(self) -> str:
+        """
+        Include span and trace id when tracing is enabled.
+        """
+        if service_config.TRACING and not service_config.TESTING:
+            return "%(timestamp)s %(levelname)s %(sender)s %(otelSpanID)s %(otelTraceID)s %(message)s"
+        return "%(timestamp)s %(levelname)s %(sender)s %(message)s"
+
+    DATE_FORMAT: str = "%Y-%m-%dT%H:%M:%S"
+
+    @property
+    def _default_config(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "json": {
+                    "format": self.JSON_FORMAT,
+                    "()": "ext://holo.logging.HoloJsonFormatter",
+                    "timestamp": True,
+                    "rename_fields": {
+                        "message": "msg",
+                        "levelname": "level",
+                    },
+                    "json_encoder": "ext://holo.logging.HoloJsonEncoder",
+                    # Lines to remove from the log output as this logger adds everything regardless of `format`.
+                    "reserved_attrs": RESERVED_ATTRS + ["color_message"],
+                },
+            },
+            "filters": {
+                "uvicorn_access": {
+                    "()": "holo.logging.UvicornAccessFilter",
+                    "endpoints": ["/health", "/metrics", "/ping"],
+                },
+            },
+            "handlers": {
+                "default": {
+                    "class": "logging.StreamHandler",
+                    "formatter": "json",
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "loggers": {
+                "": {
+                    "propagate": False,
+                    "level": self.LEVEL,
+                    "handlers": ["default"],
+                },
+                "uvicorn": {
+                    "propagate": True,
+                    "level": self.LEVEL,
+                },
+                "uvicorn.access": {
+                    "propagate": False,
+                    "handlers": [],
+                },
+                "access": {
+                    "propagate": True,
+                    "level": self.LEVEL,
+                    "filters": ["uvicorn_access"],
+                },
+                "httpx": {
+                    "propagate": False,
+                    "handlers": [],
+                },
+            },
+        }
+
+    @property
+    def DICT_CONFIG(self) -> dict[str, Any]:
+        log_config = self._default_config
+
+        if not self.JSON:
+            log_config["formatters"]["colored"] = {
+                "format": self.LOCAL_FORMAT,
+                "datefmt": self.DATE_FORMAT,
+                "class": "coloredlogs.ColoredFormatter",
+            }
+            log_config["handlers"]["default"]["formatter"] = "colored"
+        {% if include_database %}
+        if self.SQL:
+            log_config["loggers"]["sqlalchemy.engine"] = {
+                "propagate": True,
+                "level": self.LEVEL,
+            }
+        {% endif %}
+        return log_config
+
+    model_config = ConfigDict(env_prefix="LOG_")

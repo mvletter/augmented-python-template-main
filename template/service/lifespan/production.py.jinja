@@ -1,0 +1,52 @@
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+
+from fastapi import FastAPI
+
+{% if use_nats %}
+from holo.config import config
+from service.injector import nats_connector
+from service.nats import subscribers
+
+{% endif %}
+
+class Lifespan:
+    async def start(self) -> None:
+        {% if use_resgate %}
+        # Initialze and start your resgate clients here.
+        # E.g. await resclient.startup()
+
+        {% endif %}
+        {% if use_nats %}
+        if config.nats.ENABLED:
+            nats_connector.add_subscribers(subscribers)
+            await nats_connector.startup()
+        {% endif %}
+        {% if not use_nats and not use_resgate %}
+        pass
+        {% endif %}
+
+    async def stop(self) -> None:
+        {% if use_nats %}
+        if config.nats.ENABLED:
+            await nats_connector.shutdown()
+        {% endif %}
+        {% if use_resgate %}
+
+        # Stop your resgate clients here.
+        # E.g. await resclient.shutdown()
+        {% endif %}
+        {% if not use_nats and not use_resgate %}
+        pass
+        {% endif %}
+
+    def __call__(self) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+        @asynccontextmanager
+        async def inner(app: FastAPI) -> AsyncGenerator[None]:
+            await self.start()
+            try:
+                yield
+            finally:
+                await self.stop()
+
+        return inner

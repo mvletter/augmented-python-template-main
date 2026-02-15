@@ -1,0 +1,23 @@
+# This file is used in a custom pipeline for picking an assignee at random
+# for template-update merge requests.
+#
+# REPOOWNERS is propagated to each service with every template-update, so for
+# changes this file need to be changed only once.
+#
+# Assignees for template-update are picked based on the gitlab group, so
+# these are the different prefixes.
+#
+# During verification (a pipeline step), this request needs to return
+# exactly 1 result: https://gitlab.wearespindle.com/api/v4/users/?search={user}
+
+agile-alpacas @AntonMulder @esther @johannes.wierenga @jan.harkema
+
+connectivity/ascend-clients @jasper @mattijs @remi
+
+lucky-lions @allard @marijn @michiel
+
+scrummy-bears @radu @theo
+
+sip-hackers @jasper @mattijs @remi @cornelis
+
+tools/croupier @AntonMulder

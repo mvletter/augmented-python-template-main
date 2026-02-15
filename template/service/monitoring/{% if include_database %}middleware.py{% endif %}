@@ -1,0 +1,35 @@
+from contextvars import ContextVar
+from uuid import uuid4
+
+
+try:
+    from service.monitoring.sql import SqlMonitor, statement_console as console
+except ImportError:
+    SqlMonitor = None
+
+
+class SqlMonitorMiddleware:
+    request_context = ContextVar("sqlmonitor")
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        request_id = str(uuid4())
+        token = self.request_context.set(request_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.request_context.reset(token)
+            if SqlMonitor:
+                stats = SqlMonitor.get_request_stats(request_id)
+                if stats:
+                    msg = f"> Query stats on {scope['path']}: "
+                    if "executemany" in stats:
+                        msg = f"{msg}Executemany: [bold cyan]{stats['executemany']}[/bold cyan]. "
+                    msg = f"{msg}Query count [bold cyan]{stats['count']}[/bold cyan]. Execution time: [bold cyan]{stats['time']}[/bold cyan]."
+                    console.print(msg)

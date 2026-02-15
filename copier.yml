@@ -1,0 +1,91 @@
+# Questions when create a new service from the template.
+service_name:
+  type: str
+  help: Service name with dashes (my-awesome-service)
+description:
+  type: str
+  help: A oneliner about what your service does.
+include_database:
+  type: bool
+  default: yes
+  help: Do you need a Postgres database?
+include_redis:
+  type: bool
+  default: no
+  help: Do you need Redis (Dragonfly)?
+use_nats:
+  type: bool
+  default: yes
+  help: Do you want to use holo.nats to connect to NATS?
+use_resgate:
+  type: bool
+  when: "{{ use_nats }}"
+  default: no
+  help: Do you want to use holo.resclient?
+motivation:
+  type: str
+  default: ""
+  help: A more detailed description of the motivation behind the creation of the project. This should explain why the project exists and what it should cover.
+dependabot_assignees:
+  type: yaml
+  default: []
+  help: List of assigness for dependabot generated merge requests, for example [lucas.mendes, Dmillenaar, remi] (Users should match gitlab users).
+codeowners:
+  type: str
+  default: ""
+  help: List of CODEOWNERS, also assigness for renovatebot generated merge requests, for example `@lucas.mendes @Dmillenaar @remi` (Users should match gitlab users).
+# Configuration for copier.
+_subdirectory: template
+_exclude:
+  # Defaults.
+  - "copier.yaml"
+  - "copier.yml"
+  - "~*"
+  - "*.py[co]"
+  - "__pycache__"
+  - ".git"
+  - ".DS_Store"
+  - ".svn"
+# Jinja2 settings.
+_envops:
+  autoescape: false
+  keep_trailing_newline: true
+  trim_blocks: true
+  lstrip_blocks: true
+# Commands to execute after generating or updating a project from your template.
+# Need to find a way to skip this stuff on ci.
+# _tasks:
+#   - "git init"
+#   - "git remote add origin git@gitlab.wearespindle.com:holodeck/services/{{ service_name }}.git"
+_message_after_copy: |
+    Your new service "{{ service_name }}" has been created successfully!
+
+    Some additional steps:
+    1. Setup Sentry and slack channels (https://noto.li/TGbCxO)
+    2. Create rego file (https://noto.li/JM3b05)
+    3. Update the readme (Extend motivation, Update URL's)
+
+    Optional:
+    1. Create a Grafana dashboard
+
+    (More information can be found on our wiki. https://noto.li/gywoFd)
+# Claude Code workflow settings
+enable_claude_workflow:
+  type: bool
+  default: yes
+  help: Include Claude Code workflow (MoAI SPEC workflow)?
+claude_user_name:
+  type: str
+  when: "{{ enable_claude_workflow }}"
+  default: ""
+  help: Your name for git commits (e.g., John Smith)
+claude_language:
+  type: str
+  when: "{{ enable_claude_workflow }}"
+  default: en
+  choices:
+    - en
+    - nl
+    - ko
+    - ja
+  help: Primary language for Claude responses

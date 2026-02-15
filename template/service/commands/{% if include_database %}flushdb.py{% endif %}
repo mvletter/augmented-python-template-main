@@ -1,0 +1,10 @@
+from holo.commands.command import BaseCommand
+from service.core.usecases import FlushDbUsecase
+
+
+class FlushDbCommand(BaseCommand):
+    needs_db = True
+
+    async def run(self, args, db_session) -> None:
+        # Recreate db.
+        await FlushDbUsecase()()  # this uses engine directly, no need for session

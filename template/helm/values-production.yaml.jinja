@@ -1,0 +1,14 @@
+holodeck-service:
+  replicaCount: 2
+
+  envVars:
+    ENVIRONMENT:
+      value: production
+  {% if use_nats %}
+    NATS_CONSUMER_NAME:
+      value: {{ service_name }}-production
+  {% endif %}
+  {% if include_database %}
+  postgres:
+    replicas: 2
+  {% endif %}

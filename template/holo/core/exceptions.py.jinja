@@ -1,0 +1,110 @@
+"""
+There is something to think about here. A sort of a rule from clean
+architecture is to not use "frameworks" in your core. Currently we
+kinda heavily depend on Pydantic because it makes validation so much
+easier. But that might be difficult to recreate in golang.
+
+So the question is do we go for consistency across potential programming
+languages or for easy of use depending on programming language?
+
+Pydantic allows us to do dataclass validation and function argument
+validation out of the box! The downside we are stuck with their
+ErrorValidation class. So in the event of getting rid of pydantic
+you kinda break the dependancy rule and that would be a big refactor.
+
+So I'm really torn between development speed and uniform architecture
+across programming languages. I choose for development speed right
+now to demonstrate how easy it is. And in the case of going for a
+uniform architecture we would need to build ourselves some sort
+of validation error (structure) and tools to construct those errors
+for entities and usecase arguments.
+"""
+{% if include_database or include_redis %}
+
+from types import TracebackType
+
+from asyncpg.exceptions import (
+    CannotConnectNowError,
+    ConnectionDoesNotExistError,
+    InFailedSQLTransactionError,
+    ReadOnlySQLTransactionError,
+)
+from asyncpg.exceptions._base import InterfaceError
+from redis.exceptions import ConnectionError
+from sqlalchemy.exc import DBAPIError
+{% endif %}
+
+
+class DomainException(Exception):
+    pass
+
+
+class SystemError(DomainException):
+    pass
+
+
+class EntityError(DomainException):
+    pass
+
+
+class AlreadyExistsError(EntityError):
+    pass
+
+
+class DoesNotExistError(EntityError):
+    pass
+{% if include_database or include_redis %}
+
+
+def is_database_shutting_down_error(
+    exception: BaseException,
+    exception_type: type[BaseException] | None = None,
+    trace: TracebackType | None = None,
+) -> bool:
+    """
+    Determine if postgres/redis is shutting down or a connection to it
+    is otherwise problematic based on the given exception.
+
+    This can be caused by several things. Examples:
+    - postgres changes leader and the current connection becomes read-only
+    - postgres/redis is being moved by an autoscaler and is shutting down
+    """
+    if exception_type is None:
+        exception_type = type(exception)
+    if trace is None:
+        trace = exception.__traceback__
+
+    if (
+        exception_type == CannotConnectNowError
+        and (
+            "the database system is starting up" in str(exception)
+            or "the database system is shutting down" in str(exception)
+        )
+        or exception_type == InterfaceError
+        and "connection is closed" in str(exception)
+        or exception_type == ConnectionError
+        and "Connection refused" in str(exception)
+    ):
+        return True
+    elif exception_type == DBAPIError:
+        underlying_exception = getattr(exception, "orig", None)
+        if getattr(underlying_exception, "__cause__", None):
+            underlying_exception = underlying_exception.__cause__
+        if isinstance(
+            underlying_exception,
+            ConnectionDoesNotExistError | InFailedSQLTransactionError | ReadOnlySQLTransactionError,
+        ):
+            return True
+    elif exception_type in (
+        ConnectionRefusedError,
+        ConnectionResetError,
+    ):
+        # These are builtin errors and can be raised for anything, so
+        # explicitly check for asyncpg in the stack.
+        while trace := trace.tb_next:
+            frame = trace.tb_frame
+            if "asyncpg" in frame.f_code.co_filename:
+                return True
+
+    return False
+{% endif %}

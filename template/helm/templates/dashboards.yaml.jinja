@@ -1,0 +1,22 @@
+{% raw %}
+{{- $files := .Files.Glob "dashboards/*.json" }}
+{{- range $path, $fileContents := $files }}
+{{- $dashboardName := regexReplaceAll "(^.*/)(.*)\\.json$" $path "${2}" }}
+{%  endraw %}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ '{{ printf "%s-%s" $.Values.global.service $dashboardName | trunc 63 | trimSuffix "-" }}' }}
+  labels:
+    {{ '{{- include "holodeck-service.labels" $ | nindent 4 }}' }}
+    grafana_dashboard: "1"
+  annotations:
+    argocd.argoproj.io/sync-options: ServerSideApply=true
+    grafana_dashboard_folder: "{{ '{{ $.Values.global.domain.name }}' }}"
+data:
+  {{ "{{ $dashboardName }}.json: {{ $.Files.Get $path | toJson }}" }}
+
+---
+{% raw %}
+{{- end }}
+{% endraw %}

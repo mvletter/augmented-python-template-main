@@ -1,0 +1,7 @@
+from pydantic.networks import RedisDsn
+
+from holo.config.base import HoloSettings
+
+
+class RedisConfig(HoloSettings):
+    REDIS_DSN: RedisDsn

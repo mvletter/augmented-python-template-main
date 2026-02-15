@@ -1,0 +1,49 @@
+{% if include_database %}
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy.engine.base import Connection
+
+from holo.config import config
+from holo.core.usecases import BaseUsecase
+from holo.data.connectors import SingletonDBConnector
+from holo.data.models import BaseSqlModel
+
+
+class FlushDbUsecase(BaseUsecase):
+    async def __call__(self) -> None:
+        if config.service.PRODUCTION:
+            self.logger.info("flush_db: aborted for PRODUCTION")
+            return
+
+        self.logger.info("flush_db: start db drop/create")
+        db = SingletonDBConnector()
+        async with db.engine.begin() as conn:
+            try:
+                await conn.run_sync(BaseSqlModel.metadata.drop_all)
+                await conn.run_sync(BaseSqlModel.metadata.create_all)
+            except Exception:
+                self.logger.exception("flush_db: unexpected error during db drop/create")
+                raise
+
+        async with db.engine.connect() as conn:
+            await conn.run_sync(self._stamp_head)
+
+        self.logger.info("flush_db: db drop/create done")
+
+    def _stamp_head(self, conn: Connection) -> None:
+        """
+        Ensure the local head revision ends up in the table
+        `alembic_version`.
+        """
+        cfg = Config("alembic.ini")
+        disk = ScriptDirectory.from_config(cfg)
+        database = MigrationContext.configure(conn)
+
+        database._ensure_version_table(purge=True)
+        heads = disk.get_heads()
+        if heads:
+            database.stamp(disk, heads[0])
+
+        conn.commit()
+{% endif %}

@@ -1,0 +1,218 @@
+import asyncio
+import logging
+from abc import ABC, abstractmethod
+from argparse import ArgumentParser, Namespace
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+from opentelemetry import trace
+{% if include_database or use_nats %}
+
+from holo.config import config
+{% endif %}
+
+# Initialize logging and settings with importing server.
+from service import server  # noqa
+{% if include_database and use_nats and include_redis %}
+from service.injector import db_connector, nats_connector, redis_connector
+{% elif include_database and use_nats %}
+from service.injector import db_connector, nats_connector
+{% elif include_database and include_redis %}
+from service.injector import db_connector, redis_connector
+{% elif use_nats and include_redis %}
+from service.injector import nats_connector, redis_connector
+{% elif include_database %}
+from service.injector import db_connector
+{% elif use_nats %}
+from service.injector import nats_connector
+{% elif include_redis %}
+from service.injector import redis_connector
+{% endif %}
+{% if use_nats %}
+from service.nats import subscribers
+{% endif %}
+{% if include_database %}
+
+
+try:
+    from service.monitoring.sql import SqlMonitor
+except ImportError:
+    SqlMonitor = None
+{% endif %}
+
+
+class BaseCommand(ABC):
+    {% if include_database or include_redis or use_nats %}
+    {% if include_database %}
+    needs_db = False
+    {% endif %}
+    {% if include_redis %}
+    needs_redis = False
+    {% endif %}
+    {% if use_nats %}
+    needs_nats = False
+    {% endif %}
+
+    {% endif %}
+    def __init__(self) -> None:
+        name = self.__module__.split(".")[-1]
+        # Add prog name so it doesn't show ./manage.py but the command name.
+        self.parser = ArgumentParser(prog=name)
+
+    @property
+    def logger(self) -> logging.Logger:
+        return logging.getLogger(f"{self.__module__}.{self.__class__.__name__}")
+
+    def add_arguments(self, parser: ArgumentParser) -> None:
+        """
+        Add arguments to the argument parser.
+
+        Optional method to implement (in case a command requires arguments).
+
+        Args:
+            parser (ArgumentParser): The argument parser.
+        """
+
+    def parse_arguments(self, args: list) -> Namespace:
+        """
+        Parses the provided cli arguments.
+
+        Args (list): Arguments passed to the command.
+
+        Exits in case there are errors.
+
+        Returns:
+            Namespace: The parsed arguments.
+        """
+        return self.parser.parse_args(args=args)
+
+    @asynccontextmanager
+    async def get_context(self) -> AsyncIterator[dict[str, Any]]:
+        """
+        Get the keyword arguments for this command's run method.
+        """
+        context = {}
+
+        {% if include_database or include_redis or use_nats %}
+        {% if include_database %}
+        db_session = None
+        {% endif %}
+        {% if include_redis %}
+        redis_connection = None
+        {% endif %}
+        {% if use_nats %}
+        nats_connection = None
+        {% endif %}
+
+        {% if include_database %}
+        if self.needs_db:
+            db_session = context["db_session"] = db_connector.new_session()
+        {% endif %}
+        {% if include_redis %}
+        if self.needs_redis:
+            redis_connection = context["redis_connection"] = redis_connector.new_connection()
+        {% endif %}
+        {% if use_nats %}
+        if self.needs_nats:
+            nats_connection = context["nats_connection"] = await nats_connector.new_connection()
+            for stream in subscribers:
+                await stream.connect(nats_connection, consumer_name=config.nats.NATS_CONSUMER_NAME)
+        {% endif %}
+
+        {% endif %}
+        try:
+            yield context
+        except Exception:
+            {% if include_database %}
+            if db_session:
+                await db_session.rollback()
+            {% endif %}
+            # Reraise to allow for printing error and returning non-zero.
+            raise
+        else:
+            {% if include_database %}
+            if db_session:
+                await db_session.commit()
+            {% else %}
+            pass
+            {% endif %}
+        {% if include_database or include_redis or use_nats %}
+        finally:
+            {% if include_database %}
+            if db_session:
+                await db_session.close()
+            {% endif %}
+            {% if include_redis %}
+            if redis_connection:
+                await redis_connector.connection_pool.disconnect()
+            {% endif %}
+            {% if use_nats %}
+            if nats_connection:
+                for stream in subscribers:
+                    await stream.disconnect()
+                await nats_connector.close_connection()
+            {% endif %}
+        {% endif %}
+
+    @abstractmethod
+    async def run(self, args: Namespace, **context) -> None:
+        """
+        Execute this command.
+
+        Must be implemented in a command.
+
+        Args:
+            args (Namespace): The parsed arguments (if any).
+            **context: Context containing entries like (db) sessions.
+        """
+
+    @classmethod
+    def run_from_args(cls, command_args: list) -> None:
+        """
+        Entrypoint to call from a command.
+
+        command_args (list): Arguments passed to the command.
+
+        Example command for `show_client.py`:
+        ```
+        class ShowClientCommand(BaseCommand):
+            needs_db = True
+
+            def add_arguments(self, parser):
+                parser.add_argument('--client', default=42)
+
+            async def run(self, args, db_session):
+                await ShowClientUsecase(db_session=db_session)(args.client)
+        ```
+        """
+        command = cls()
+        command.add_arguments(command.parser)
+        parsed_args = command.parse_arguments(command_args)
+        {% if include_database %}
+
+        if SqlMonitor:
+            SqlMonitor.init(config.database.SQL_MONITOR)
+        {% endif %}
+
+        async def run_with_context():
+            tracer = trace.get_tracer(cls.__name__)
+            with tracer.start_as_current_span(
+                f"COMMAND {command.__class__.__name__}",
+                kind=trace.SpanKind.CONSUMER,
+            ):
+                async with command.get_context() as context:
+                    await command.run(args=parsed_args, **context)
+
+        {% if include_database %}
+        try:
+            asyncio.run(run_with_context())
+        finally:
+            if SqlMonitor:
+                SqlMonitor.summarize(
+                    config.database.SQL_SUMMARY_FILE,
+                    config.database.SQL_SUMMARY_FILE_OVERWRITE,
+                )
+        {% else %}
+        asyncio.run(run_with_context())
+        {% endif %}

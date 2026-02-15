@@ -1,0 +1,15 @@
+{% if include_database %}
+from holo.config import config
+{% endif %}
+from holo.nats.protocol import NatsSubscriberProtocol
+{% if include_database %}
+from service.adapters.nats.flush_db.handlers import flush_db_subscriber
+{% endif %}
+
+
+subscribers: list[NatsSubscriberProtocol] = []
+{% if include_database %}
+
+if not config.service.PRODUCTION:
+    subscribers.append(flush_db_subscriber)
+{% endif %}

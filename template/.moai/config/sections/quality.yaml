@@ -1,0 +1,35 @@
+constitution:
+  # Development methodology selection
+  # Options: ddd (Domain-Driven Development), tdd (Test-Driven Development), hybrid (mixed approach)
+  development_mode: "hybrid"
+
+  # Enable TRUST 5 quality framework enforcement
+  enforce_quality: true
+
+  # Target code coverage percentage (0-100)
+  test_coverage_target: 85
+
+  # Hybrid Mode Settings (recommended for most projects)
+  hybrid_settings:
+    # Methodology for new features
+    new_features: tdd
+
+    # Methodology for legacy refactoring
+    legacy_refactoring: ddd
+
+    # Minimum coverage for new code (0-100)
+    min_coverage_new: 85
+
+    # Minimum coverage for legacy code (0-100)
+    min_coverage_legacy: 85
+
+    # Preserve existing behavior during refactoring
+    preserve_refactoring: true
+
+# Report generation settings
+report_generation:
+  # Enable quality report generation
+  enabled: false
+
+  # Warn user when quality issues detected
+  warn_user: true

@@ -1,0 +1,402 @@
+variables:
+  PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+  PRE_COMMIT_HOME: "${CI_PROJECT_DIR}/.cache/pre-commit"
+  GIT_DEPTH: 15
+  PYTHON_VERSION: "3.14"
+  OS_CODENAME: "trixie"
+  UV_LINK_MODE: "copy"
+
+image: "ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-${OS_CODENAME}"
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - ${PIP_CACHE_DIR}
+    - ${PRE_COMMIT_HOME}
+
+stages:
+  - static analysis
+  - tests
+  - create release
+
+################################################################################
+### Static analysis stage
+################################################################################
+
+.static:
+  stage: static analysis
+  interruptible: true
+  variables:
+    UV_PROJECT_ENVIRONMENT: "/venv"
+  before_script:
+    - template/.gitlab/section-start "uv" "uv sync --locked" "collapsed"
+    - uv sync --locked
+    - template/.gitlab/section-end "uv"
+  script:
+    - template/.gitlab/section-start "copier" "uv run copier copy --vcs-ref=HEAD" "collapsed"
+    - >
+      uv run copier copy --vcs-ref=HEAD -f . /tmp/generated-service
+      -d service_name="generated-service"
+      -d description="Auto generated for testing"
+      -d environment_name=$ENVIRONMENT_NAME
+      -d motivation="Auto generated for testing"
+      -d include_database=$INCLUDE_DATABASE
+      -d include_redis=$INCLUDE_REDIS
+      -d use_nats=$USE_NATS
+      -d use_resgate=$USE_RESGATE
+    - cd /tmp/generated-service
+    - git init --initial-branch=main
+    - git add .
+    - .gitlab/section-end "copier"
+    - .gitlab/section-start "pre-commit" "uv run pre-commit"
+    - uv run --no-sync pre-commit run --color=always --all-files --show-diff-on-failure
+    - .gitlab/section-end "pre-commit"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+code-owners:
+  stage: static analysis
+  interruptible: true
+  before_script:
+    - uv sync --locked
+  script:
+    - uv run template/.gitlab/assignees.py --verify
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+template-requirements:
+  stage: static analysis
+  interruptible: true
+  before_script:
+    - template/.gitlab/section-start "uv" "uv sync --locked" "collapsed"
+    - uv sync --locked
+    - template/.gitlab/section-end "uv"
+  script:
+    - template/.gitlab/section-start "copier" "uv run copier copy --vcs-ref=HEAD" "collapsed"
+    - >
+      uv run copier copy --vcs-ref=HEAD -f . /tmp/generated-service
+      -d service_name="generated-service"
+      -d description="Auto generated for testing"
+      -d motivation="Auto generated for testing"
+      -d include_database=$INCLUDE_DATABASE
+      -d include_redis=$INCLUDE_REDIS
+      -d use_nats=$USE_NATS
+    - template/.gitlab/section-end "copier"
+    - cd /tmp/generated-service
+    - .gitlab/section-start "sync" "uv sync"
+    - uv sync
+    - .gitlab/section-end "sync"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+plain_copier:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .static
+
+with_db_copier:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .static
+
+with_redis_copier:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .static
+
+with_nats_copier:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "True"
+    USE_RESGATE: "False"
+  extends: .static
+
+with_nats_and_resgate_copier:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "True"
+    USE_RESGATE: "True"
+  extends: .static
+
+with_db_and_redis_copier:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .static
+
+with_db_and_redis_and_nats_copier:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "True"
+    USE_RESGATE: "False"
+  extends: .static
+
+with_db_and_redis_and_nats_and_resgate_copier:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "True"
+    USE_RESGATE: "True"
+  extends: .static
+  rules:
+    # We only run this one for merge_request_events to save resources.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+linting-version-template:
+  stage: static analysis
+  interruptible: true
+  script:
+    - |
+      PACKAGES="ruff"
+      for PACKAGE in $PACKAGES
+      do
+        PYPROJECT_VERSION=$(grep -oP $PACKAGE"==\K[0-9.]+" template/pyproject.toml) || true
+        PRE_COMMIT_VERSION=$(grep -B2 "id: $PACKAGE" template/.pre-commit-config.yaml | grep -oP "rev: v?\K[0-9.]+") || true
+
+        if [ ! -z $PYPROJECT_VERSION ] && [ ! -z $PRE_COMMIT_VERSION ] && [ $PYPROJECT_VERSION != $PRE_COMMIT_VERSION ]; then
+          echo "Version mismatch for $PACKAGE between template/pyproject.toml ($PYPROJECT_VERSION) and template/.pre-commit-config.yaml ($PRE_COMMIT_VERSION)."
+          exit 1
+        fi
+      done
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+hadolint:
+  stage: static analysis
+  image:
+    name: hadolint/hadolint:latest-alpine
+    entrypoint: [ "" ]
+  script:
+    - hadolint --config template/.hadolint.yaml template/Dockerfile
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+conventional-commits:
+  stage: static analysis
+  interruptible: true
+  before_script:
+    - uv sync --locked
+  script:
+    - git fetch
+    - |
+      for commit_hash in $(git log --format="%H" "${CI_MERGE_REQUEST_DIFF_BASE_SHA}..${CI_COMMIT_SHA}")
+      do
+        git log --format="%B" -n 1 "$commit_hash" > commit_message.txt
+        uv run conventional-pre-commit commit_message.txt
+      done
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+requirements:
+  stage: static analysis
+  interruptible: true
+  script:
+    - uv lock --check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - pyproject.toml
+        - uv.lock
+  when: always
+
+
+################################################################################
+### Test stage
+################################################################################
+
+.pytest:
+  stage: tests
+  interruptible: true
+  allow_failure: false
+  services:
+    - name: "${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/postgres:16"
+      alias: db
+    - name: docker.dragonflydb.io/dragonflydb/dragonfly:v1.33.1
+      alias: redis
+  variables:
+    # TODO: Find a nicer way to make this work, extendable.
+    POSTGRES_USER: testdb
+    POSTGRES_PASSWORD: dbpassword
+    POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_USER}
+    REDIS_DSN: redis://redis:6379
+    NATS_SERVER_URL: "nats://nats:4222"
+    NATS_CONSUMER_NAME: "python-template"
+    LOG_JSON: 0
+    TRACING: 0
+    REMOTE_TRACING: 0
+    SENTRY_DSN: ""
+  before_script:
+    - template/.gitlab/section-start "uv sync" "uv sync --locked" "collapsed"
+    - uv sync --locked
+    - template/.gitlab/section-end "uv sync"
+  script:
+    - template/.gitlab/section-start "copier" "copier copy --vcs-ref=HEAD" "collapsed"
+    - uv run copier copy --vcs-ref=HEAD -f . /tmp/generated-service
+      -d service_name="generated-service"
+      -d description="Auto generated for testing"
+      -d motivation="Auto generated for testing"
+      -d include_database=$INCLUDE_DATABASE
+      -d include_redis=$INCLUDE_REDIS
+      -d use_nats=$USE_NATS
+    - cd /tmp/generated-service
+    - .gitlab/section-end "copier"
+    - .gitlab/section-start "uv sync" "uv sync" "collapsed"
+    - uv sync
+    - .gitlab/section-end "uv sync"
+    - .gitlab/section-start "pytest" "pytest --cov=service --junitxml=report.xml"
+    - uv run pytest --cov=service --junitxml=report.xml
+    - uv run coverage xml
+    - mv report.xml coverage.xml /builds/holodeck/templates/python-template/
+    - .gitlab/section-end "pytest"
+  coverage: '/TOTAL.*\s+(\d+\%)/'
+  artifacts:
+    when: always
+    paths:
+      - coverage.xml
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+plain_pytest:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .pytest
+
+with_db_pytest:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .pytest
+
+with_redis_pytest:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .pytest
+
+with_nats_pytest:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "True"
+    USE_RESGATE: "False"
+  extends: .pytest
+
+with_nats_and_resgate_pytest:
+  variables:
+    INCLUDE_DATABASE: "False"
+    INCLUDE_REDIS: "False"
+    USE_NATS: "True"
+    USE_RESGATE: "True"
+  extends: .pytest
+
+with_db_and_redis_pytest:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "False"
+    USE_RESGATE: "False"
+  extends: .pytest
+
+with_db_and_redis_and_nats_pytest:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "True"
+    USE_RESGATE: "False"
+  extends: .pytest
+
+with_db_and_redis_and_nats_and_resgate_pytest:
+  variables:
+    INCLUDE_DATABASE: "True"
+    INCLUDE_REDIS: "True"
+    USE_NATS: "True"
+    USE_RESGATE: "True"
+  extends: .pytest
+  rules:
+    # We only run this one for merge_request_events to save resources.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+
+################################################################################
+### Create release stage
+################################################################################
+
+create_release:
+  stage: create release
+  image: node
+  before_script:
+    - npm install -g conventional-changelog-cli@4.1.0
+    - curl --location --output /usr/local/bin/release-cli "https://gitlab.com/api/v4/projects/gitlab-org%2Frelease-cli/packages/generic/release-cli/latest/release-cli-linux-amd64"
+    - chmod +x /usr/local/bin/release-cli
+  script:
+    # Determine new tag
+    - git fetch --prune origin +refs/tags/*:refs/tags/*
+    - LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+    - IFS="." read -r YEAR WEEK PATCH <<< $LATEST_TAG
+    - CURRENT_WEEK=$(date +%V | sed 's/^0//')
+    - CURRENT_YEAR=$(date +%Y)
+    - |
+      if [[ $WEEK == $CURRENT_WEEK ]]; then
+        let "PATCH=PATCH+1"
+      else
+        PATCH=0
+      fi
+    - NEW_TAG="v$CURRENT_YEAR.$CURRENT_WEEK.$PATCH"
+    # New tag determined
+    # Patch changelog source: enable all changelog types
+    - |
+      SRC_DIR="$(npm root -g)/conventional-changelog-cli/node_modules/conventional-changelog-conventionalcommits"
+      CONSTANTS_FILE="$SRC_DIR/constants.js"
+      if [ -f "$CONSTANTS_FILE" ]; then
+        sed -i "s/hidden: true/hidden: false/g" "$CONSTANTS_FILE"
+      fi
+    - |
+      WRITEROPTS_FILE="$SRC_DIR/writerOpts.js"
+      if [ -f "$WRITEROPTS_FILE" ]; then
+        sed -i "s/{{~@root.host}}/https:\/\/gitlab.wearespindle.com/g" "$WRITEROPTS_FILE"
+      fi
+    # Changelog patched
+    # Create new release
+    - CHANGELOG=$(conventional-changelog -r 1 -p conventionalcommits)
+    - release-cli create --tag-name "$NEW_TAG" --name "Release $NEW_TAG" --ref $CI_COMMIT_SHA --description "$CHANGELOG" --tag-message "$CHANGELOG"
+    # New release created.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - template/**/*

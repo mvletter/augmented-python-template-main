@@ -1,0 +1,207 @@
+{% if include_database %}
+from collections.abc import AsyncGenerator, Callable, Generator
+
+{% elif include_redis %}
+from collections.abc import AsyncGenerator
+
+{% endif %}
+import pytest
+from faker import Faker
+from polyfactory.factories.pydantic_factory import ModelFactory
+{% if include_redis %}
+from pydantic.networks import RedisDsn
+from pydantic_core import Url
+from redis import asyncio as aioredis
+{% if not include_database %}
+
+{% endif %}
+{% endif %}
+{% if include_database %}
+from sqlalchemy import text
+from sqlalchemy.engine import URL as DBUrl
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio.engine import AsyncConnection, AsyncEngine, AsyncTransaction
+
+{% endif %}
+{% if include_database or include_redis %}
+from holo.config import config
+{% endif %}
+{% if include_database %}
+from holo.data.factories import AsyncPersistenceHandler, BaseSQLAlchemyFactory
+from holo.data.models import BaseSqlModel
+
+
+async def drop_database(url: DBUrl) -> None:
+    """
+    Drop database structure.
+    """
+    database_name = url.database
+    server_only_url = url.set(database="postgres")
+    engine = create_async_engine(server_only_url, isolation_level="AUTOCOMMIT")
+
+    async with engine.connect() as conn:
+        disc_users = """
+        SELECT pg_terminate_backend(pg_stat_activity.pid)
+        FROM pg_stat_activity
+        WHERE pg_stat_activity.datname = :database_name
+          AND pid <> pg_backend_pid();
+        """
+        await conn.execute(text(disc_users), {"database_name": database_name})
+        await conn.execute(text(f'DROP DATABASE "{database_name}"'))
+
+
+async def create_database(url: DBUrl) -> None:
+    """
+    Create initial database structure.
+    """
+    database_name = url.database
+    server_only_url = url.set(database="postgres")
+
+    engine = create_async_engine(server_only_url, isolation_level="AUTOCOMMIT")
+
+    async with engine.connect() as conn:
+        c = await conn.execute(
+            text("SELECT 1 FROM pg_database WHERE datname = :database_name"),
+            {"database_name": database_name},
+        )
+        database_exists = c.scalar() == 1
+
+    if database_exists:
+        await drop_database(url)
+
+    async with engine.connect() as conn:
+        await conn.execute(text(f'CREATE DATABASE "{database_name}" ENCODING "utf8" TEMPLATE template1'))
+
+
+@pytest.fixture(scope="session")
+def database_url() -> DBUrl:
+    """
+    Get database url.
+    """
+    return config.database.DB_URL
+
+
+@pytest.fixture(scope="session")
+def init_database() -> list[Callable]:
+    """
+    Fixture to create all database models.
+    """
+    return [BaseSqlModel.metadata.create_all]
+
+
+@pytest.fixture(scope="session")
+async def engine(database_url, init_database) -> AsyncGenerator[AsyncEngine]:
+    """
+    Create database for testing.
+    """
+    db_url = database_url
+    test_db_url = db_url.set(database=f"{db_url.database}_test")
+
+    await create_database(test_db_url)
+
+    engine = create_async_engine(test_db_url)
+    async with engine.begin() as conn:
+        for models in init_database:
+            await conn.run_sync(models)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+        await drop_database(test_db_url)
+
+
+@pytest.fixture
+async def dbsession(engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+    """
+    Fixture that returns a SQLAlchemy session with a SAVEPOINT, and the
+    rollback to it after the test completes.
+    """
+    connection: AsyncConnection = await engine.connect()
+    trans: AsyncTransaction = await connection.begin()
+
+    session_maker = async_sessionmaker(connection, autoflush=True)
+    session: AsyncSession = session_maker()
+
+    try:
+        yield session
+    finally:
+        await session.close()
+        # Silence warning:
+        # sys:1: SAWarning: transaction already deassociated from connection
+        if trans.is_active:
+            await trans.rollback()
+        await connection.close()
+
+
+@pytest.fixture(autouse=True)
+async def _enable_unaccent(dbsession: AsyncSession) -> None:
+    """
+    Enable unaccent extension.
+    """
+    await dbsession.execute(text("CREATE EXTENSION IF NOT EXISTS unaccent;"))
+
+
+@pytest.fixture(autouse=True)
+def _inject_session_in_sqlmodel_factory(dbsession: AsyncSession) -> Generator[None]:
+    BaseSQLAlchemyFactory.set_session(dbsession)
+    AsyncPersistenceHandler.set_session(dbsession)
+    yield
+    BaseSQLAlchemyFactory.reset_session()
+    AsyncPersistenceHandler.reset_session()
+{% endif %}
+{% if include_redis %}
+
+
+@pytest.fixture(scope="session")
+def redis_dsn() -> Url:
+    """
+    Point to a different database on our existing redis instance (db 0 -> db 1).
+    """
+    live_dsn = config.redis.REDIS_DSN
+    test_dsn = Url.build(
+        scheme=live_dsn.scheme,
+        username=live_dsn.username,
+        password=live_dsn.password,
+        host=live_dsn.host,
+        port=live_dsn.port,
+        path="1",
+        query=live_dsn.query,
+        fragment=live_dsn.fragment,
+    )
+    return test_dsn
+
+
+@pytest.fixture(scope="session")
+async def redis_pool(redis_dsn: RedisDsn) -> AsyncGenerator[aioredis.ConnectionPool]:
+    """
+    Get a redis connection pool instance.
+    """
+    pool = aioredis.ConnectionPool.from_url(str(redis_dsn), decode_responses=True)
+
+    yield pool
+
+    await pool.disconnect()
+
+
+@pytest.fixture
+async def redissession(redis_pool) -> AsyncGenerator[aioredis.Redis]:
+    """
+    Get a redis session.
+    """
+    session = aioredis.Redis(connection_pool=redis_pool)
+
+    yield session
+
+    # Drop current db only.
+    await session.flushdb()
+    await session.aclose()
+{% endif %}
+
+
+@pytest.fixture(autouse=True)
+def _seed_factories(faker: Faker, faker_seed) -> None:
+    """
+    Propogate --randomly-seed to polyfactory.
+    """
+    ModelFactory.__faker__ = faker
+    ModelFactory.__random__.seed(faker_seed)

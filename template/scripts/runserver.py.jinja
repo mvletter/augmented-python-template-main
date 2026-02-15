@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+{% if include_database %}
+import asyncio
+import importlib
+from enum import Enum, auto
+
+{% endif %}
+import uvicorn
+{% if include_database %}
+from alembic import script
+from alembic.runtime import migration
+from rich.console import Console
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from holo.config import config as holo_config
+
+
+try:
+    from service.core.usecases import FlushDbUsecase
+
+    can_flush_db = True
+except ImportError:
+    can_flush_db = False
+
+
+console = Console()
+
+
+class MigrationStatus(Enum):
+    NOTHING_TO_DO = auto()
+    DATABASE_MISSING = auto()
+    PENDING = auto()
+    UNKNOWN_HEAD = auto()
+
+
+def check_pending_migrations(conn) -> MigrationStatus:
+    """
+    Compare current migration status versus current head on disk.
+    """
+    script_ = script.ScriptDirectory("./migrations")
+    context = migration.MigrationContext.configure(conn)
+
+    head = script_.get_current_head()
+    if head:
+        current = context.get_current_revision()
+        if current is None:
+            if can_flush_db:
+                console.print(
+                    "[red bold]You haven't applied any migrations yet.\nRun 'alembic upgrade head' to apply them, or wait to automatically run FlushDbUsecase().",
+                )
+            else:
+                console.print(
+                    "[red bold]You haven't applied any migrations yet.\nRun 'alembic upgrade head' to apply them.",
+                )
+            return MigrationStatus.DATABASE_MISSING
+        elif current != head:
+            # First item in `revisions` will be head.
+            revisions = [rev.revision for rev in script_.walk_revisions()]
+            if current not in revisions:
+                console.print(
+                    f"[red bold]The last migration '{current}' could not be found on disk. Perhaps you forgot to unapply a migration from another branch?\nRun 'alembic downgrade -1' to unapply them.",
+                )
+                return MigrationStatus.UNKNOWN_HEAD
+
+            console.print(
+                f"[red bold]You have {revisions.index(current)} unapplied migration(s).\nRun 'alembic upgrade head' to apply them.",
+            )
+            return MigrationStatus.PENDING
+
+        console.print("[green]Your database is up-to-date.")
+    return MigrationStatus.NOTHING_TO_DO
+
+
+async def check_db() -> None:
+    """
+    Connect to the database and check for missing migrations.
+    """
+    db_url = holo_config.database.DB_URL.render_as_string(hide_password=False)
+    engine = create_async_engine(db_url)
+
+    async with engine.connect() as conn:
+        result = await conn.run_sync(check_pending_migrations)
+        if result == MigrationStatus.DATABASE_MISSING and can_flush_db:
+            try:
+                timeout = 5
+                async with asyncio.timeout(timeout):
+                    for n in range(timeout + 1):
+                        console.print(
+                            f"[yellow bold]Database will now be created in {timeout - n}, press CTRL-C to cancel..",
+                            end="\r",
+                        )
+                        await asyncio.sleep(1)
+            except TimeoutError:
+                if can_flush_db:
+                    # BaseSqlModel.metadata.tables remains empty without
+                    # manual import before the entire app is loaded in.
+                    for module in holo_config.migrations.MANAGED_MODELS:
+                        importlib.import_module(module)
+
+                    await FlushDbUsecase()()
+                    console.print("\n[yellow bold]Database created.")
+            except KeyboardInterrupt, asyncio.CancelledError:
+                console.print("\n[yellow bold]Database creation aborted.")
+
+    await engine.dispose()
+{% endif %}
+
+
+if __name__ == "__main__":
+    {% if include_database %}
+    asyncio.run(check_db())
+
+    {% endif %}
+    # Equivalent of command:
+    # > uvicorn service.server:app --host=0.0.0.0 --forwarded-allow-ips '*' --reload
+    uvicorn.run("service.server:app", host="0.0.0.0", forwarded_allow_ips="*", reload=True)  # nosec B104

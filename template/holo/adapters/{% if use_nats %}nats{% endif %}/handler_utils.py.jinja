@@ -1,0 +1,78 @@
+{% if include_database or include_redis %}
+import contextlib
+{% if include_database %}
+import logging
+{% endif %}
+{% if include_database or include_redis %}
+from collections.abc import AsyncGenerator
+{% endif %}
+
+{% endif %}
+{% if include_database or include_redis %}
+{% if include_database %}
+from asyncpg.exceptions import UndefinedTableError
+{% endif %}
+{% if include_redis %}
+from redis.asyncio import Redis
+{% endif %}
+{% if include_database %}
+from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from holo.config import config
+{% endif %}
+{% endif %}
+{% if include_database and include_redis %}
+from service.injector import db_connector, redis_connector
+{% elif include_database %}
+from service.injector import db_connector
+{% elif include_redis %}
+from service.injector import redis_connector
+{% endif %}
+{% if include_database or include_redis %}
+
+{% endif %}
+{% if include_database %}
+
+logger = logging.getLogger(__name__)
+
+
+@contextlib.asynccontextmanager
+async def db_session(savepoint: bool = True) -> AsyncGenerator[AsyncSession]:
+    """
+    Async contextmanager to get a db session.
+
+    Args:
+        savepoint (bool): Immediately start a savepoint (default).
+    """
+    async with db_connector.new_session() as session:
+        async with session.begin_nested() if savepoint else contextlib.nullcontext():
+            try:
+                yield session
+                await session.commit()
+            except ProgrammingError as e:
+                if config.service.ENVIRONMENT == "" and str(UndefinedTableError) in str(e.orig):
+                    logger.warning("Detected missing tables, did you run: `docker compose run --rm db-migrate` ?")
+                raise
+            except Exception:
+                if not savepoint:
+                    await session.rollback()
+                logger.warning("did a database rollback")  # in k8s this will always print the trace_id
+                raise
+{% endif %}
+{% if include_redis %}
+
+{% if include_database %}
+
+{% endif %}
+@contextlib.asynccontextmanager
+async def redis_session() -> AsyncGenerator[Redis]:
+    """
+    Async contextmanager to get a redis session.
+    """
+    connection = redis_connector.new_connection()
+    try:
+        yield connection
+    finally:
+        await connection.aclose()
+{% endif %}

@@ -1,0 +1,154 @@
+[dependency-groups]
+ci = [
+    "anybadge==1.16.0",
+    "codeowners==0.8.0",
+    "conventional-pre-commit==4.3.0",
+    "copier==9.11.3",
+    "pre-commit==4.5.1",
+    "requests==2.32.5"
+]
+dev = [
+    "aioresponses==0.7.8",
+    "coloredlogs==15.0.1",
+    "freezegun==1.5.5",
+    "httpx==0.28.1",
+    "ipython==9.10.0",
+    "polyfactory==3.2.0",
+    "pre-commit==4.5.1",
+    "pytest-alembic==0.12.1",
+    "pytest-asyncio==1.3.0",
+    "pytest-cov==7.0.0",
+    "pytest-mock==3.15.1",
+    "pytest-randomly==4.0.1",
+    "pytest==9.0.2",
+    "pyyaml==6.0.3",
+    "rich==14.3.2",
+    "ruff==0.15.0",
+    "sqlparse==0.5.5"
+]
+
+[project]
+authors = [{email = "dev@voys.nl", name = "Voys"}]
+dependencies = [
+    "aiocache==0.12.3",
+    "aiohttp==3.13.3",
+    "alembic==1.18.3",
+    "asgi-logger==0.1.0",
+    "fastapi==0.128.6",
+    "nats-py[nkeys]==2.13.1",
+    "opentelemetry-exporter-otlp-proto-http==1.38.0",
+    "opentelemetry-instrumentation-aiohttp-client==0.59b0",
+    "opentelemetry-instrumentation-fastapi==0.59b0",
+    "opentelemetry-instrumentation-logging==0.59b0",
+    "opentelemetry-instrumentation-redis==0.59b0",
+    "opentelemetry-instrumentation-sqlalchemy==0.59b0",
+    "prometheus-client==0.24.1",
+    "pydantic-settings==2.12.0",
+    "pydantic==2.12.5",
+    "pyjwt[crypto]==2.10.1",
+    "pynacl==1.6.2",
+    "python-json-logger==4.0.0",
+    "redis==7.1.0",
+    "segment-analytics-python==2.3.5",
+    "sentry-sdk[fastapi]==2.52.0",
+    "sqlalchemy[postgresql-asyncpg]==2.0.46",
+    "starlette-prometheus==0.10.0",
+    "starlette==0.49.3",
+    "tenacity==9.1.4",
+    "uvicorn[standard]==0.40.0"
+]
+description = ""
+name = "TBD"
+requires-python = "~=3.14.0"
+version = "0.1.0"
+
+[tool.bandit]
+skips = ["B101"]
+
+[tool.coverage.run]
+concurrency = ["thread"]
+omit = [
+    "*/tests/*",
+    "conftest.py",
+    "holo/*",
+    "scripts/*",
+    "service/adapters/nats/flush_db/*",
+    "service/commands/*",
+    "service/injector.py",
+    "service/lifespan/*",
+    "service/monitoring/*",
+    "service/server.py"
+]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "session"
+asyncio_mode = "auto"
+log_level = "INFO"
+
+[tool.ruff]
+line-length = 119
+
+[tool.ruff.lint]
+ignore = [
+    "D100",  # Checks for undocumented public module definitions.
+    "D101",  # Checks for undocumented public class definitions.
+    "D102",  # Checks for undocumented public method definitions.
+    "D103",  # Checks for undocumented public function definitions.
+    "D104",  # Checks for undocumented public package definitions.
+    "D105",  # Checks for undocumented magic method definitions.
+    "D106",  # Checks for undocumented public class definitions, for nested classes.
+    "D107",  # Checks for public __init__ method definitions that are missing docstrings.
+    "D200",  # Checks for single-line docstrings that are broken across multiple lines.
+    "D205",  # Checks for docstring summary lines that are not separated from the docstring description by one blank line.
+    "D401",  # Checks for docstring first lines that are not in an imperative mood.
+    "D402",  # Checks for function docstrings that include the function's signature in the summary line.
+    "E501",  # Checks for lines that exceed the specified maximum character length. Ruff-format does this.
+    "SIM108",  # if-else-block-instead-of-if-exp
+    "SIM117"  # multiple-with-statements
+]
+select = [
+    "C4",  # flake8-comprehensions
+    "COM",  # flake8-commas
+    "D",  # pydocstyle
+    "D405",  # capitalize-section-name
+    "D411",  # no-blank-line-before-section
+    "D416",  # section-name-ends-in-colon
+    "D417",  # undocumented-param
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "G004",  # Logging statements should not use f"..." for their first argument
+    "I",  # isort
+    "PIE",  # flake8-pie
+    "PT",  # flake8-pytest
+    "SIM",  # flake8-simplify
+    "TID252",  # relative-imports
+    "UP",  # pyupgrade
+    "W"  # pycodestyle warnings
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+"assertions.py" = ["PT009"]  # Allow `assertCountEqual` for list comparisson.
+"conftest.py" = ["E731"]  # Allow `lambda` expression assignment for simple global overrides.
+"factories.py" = ["E731"]  # Allow `lambda` expression assignment for nicer factories.
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 119
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.setuptools]
+packages = ['holo', 'service']
+
+[tool.tomlsort]
+sort_inline_arrays = true
+sort_inline_tables = true
+spaces_before_inline_comment = 2
+spaces_indent_inline_array = 4

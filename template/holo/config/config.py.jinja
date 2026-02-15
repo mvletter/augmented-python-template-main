@@ -1,0 +1,53 @@
+from pathlib import Path
+
+from pydantic_settings import BaseSettings
+
+{% if include_database %}
+from holo.config.database import DBConfig, MigrationsConfig
+{% endif %}
+from holo.config.logging import LoggingConfig
+{% if use_nats %}
+from holo.config.nats import NatsConfig
+{% endif %}
+from holo.config.openapi import OpenapiConfig
+{% if include_redis %}
+from holo.config.redis import RedisConfig
+{% endif %}
+{% if use_resgate %}
+from holo.config.resclient import ResgateConfig
+{% endif %}
+from holo.config.segment import SegmentConfig
+
+
+project_root = Path(__file__).parent.parent.parent
+service_config_path = project_root / "service/config.py"
+
+if service_config_path.is_file():
+    from service.config import Config as ServiceConfig
+else:
+    from holo.config.service import ServiceConfig
+
+
+class Config(BaseSettings):
+    service: ServiceConfig = ServiceConfig()
+    {% if include_database %}
+    database: DBConfig = DBConfig()
+    {% endif %}
+    logging: LoggingConfig = LoggingConfig()
+    {% if include_database %}
+    migrations: MigrationsConfig = MigrationsConfig()
+    {% endif %}
+    {% if use_nats %}
+    nats: NatsConfig = NatsConfig()
+    {% endif %}
+    openapi: OpenapiConfig = OpenapiConfig()
+    {% if include_redis %}
+    redis: RedisConfig = RedisConfig()
+    {% endif %}
+    {% if use_resgate %}
+    resgate: ResgateConfig = ResgateConfig()
+    {% endif %}
+    segment: SegmentConfig = SegmentConfig()
+
+
+config = Config()

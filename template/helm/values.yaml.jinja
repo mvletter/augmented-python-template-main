@@ -1,0 +1,54 @@
+holodeck-service:
+  secrets:
+    enabled: true
+    envVarsFromVault:
+      SEGMENT_WRITE_KEY: SEGMENT_WRITE_KEY
+      {% if use_nats %}
+      NATS_CREDS: NATS_CREDS
+      {% endif %}
+  envVars:
+    {% if use_nats %}
+    NATS_SERVER_URL:
+      value: nats://nats.nats:4222
+    {% endif %}
+    {% if use_resgate %}
+    ENABLE_RESGATE:
+      value: "1"
+    {% endif %}
+    SENTRY_DSN:
+      value: ""
+    ENVIRONMENT:
+      value: ""
+    TRACING:
+      value: "1"
+    REMOTE_TRACING:
+      value: "1"
+    OTLP_ENDPOINT:
+      value: http://otel-collector-opentelemetry-collector.otel-collector:4318/v1/traces
+    AUTH_BASE_URL:
+      value: http://auth.auth
+    SENTRY_REDACTED_VARIABLES:
+      value: "[]"
+  {% if include_database or include_redis %}
+  ingress:
+    annotations:
+      # Retry request on other backends if it fails.
+      nginx.ingress.kubernetes.io/proxy-next-upstream: error timeout invalid_header http_503 http_504 non_idempotent
+      nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "10"
+      nginx.ingress.kubernetes.io/proxy-next-upstream-timeout: "5"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3"
+      nginx.ingress.kubernetes.io/proxy-connect-timeout: "2"
+  {% endif %}
+  {% if include_database %}
+  postgres:
+    enabled: true
+    volume:
+      size: 10Gi
+  migrate:
+    command: ["alembic", "upgrade", "head"]
+  {% endif %}
+  {% if include_redis %}
+  dragonfly:
+    enabled: true
+  {% endif %}

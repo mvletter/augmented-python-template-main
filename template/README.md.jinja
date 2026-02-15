@@ -1,0 +1,63 @@
+# {{ service_name }}
+[![](scripts/badges/template_type.svg)](https://www.notion.so/theoracle/Python-Template-40776b05763142d293357c867224f588)
+[![](scripts/badges/template_version.svg)](https://www.notion.so/theoracle/Python-Template-40776b05763142d293357c867224f588)
+[![](scripts/badges/helm.svg)](https://www.notion.so/theoracle/Helm-05a1ac00d82846b8b3f2eec4ef136805)
+[![](scripts/badges/uses_database.svg)](https://www.notion.so/theoracle/PostgreSQL-Databases-a433944deb6d4121bd0cba29f90d595f)
+[![](scripts/badges/uses_resgate.svg)](https://www.notion.so/theoracle/How-to-handle-NATS-in-holodeck-1e22a7044f09452a9113919e099aea0e#1bd039a43f4840f4818a2d45caed469e)
+[![](scripts/badges/uses_nats.svg)](https://www.notion.so/theoracle/How-to-handle-NATS-in-holodeck-1e22a7044f09452a9113919e099aea0e#1bd039a43f4840f4818a2d45caed469e)
+[![](scripts/badges/uses_redis.svg)](https://www.notion.so/theoracle/Redis-Cache-dfd6779c9a974b2bb4d8386a896507fe)
+
+## Short Description
+{{ description }}
+
+## Motivation
+{{ motivation }}
+
+## Standardised service
+Versioning, Deployment, Contributing, Documentation are standardised topics covered by the [engineering wiki](https://www.notion.so/theoracle/Engineering-wiki-f0c81040835646a38786f8b548dbe4aa) & way of work.
+
+## How to use
+You can find everything about this template and how to use it [here](https://www.notion.so/theoracle/Python-Template-40776b05763142d293357c867224f588)
+
+
+## Relevant links
+
+[A link to the projects notion page.]()
+
+[A link to the AsyncAPI spec.](https://gitlab.wearespindle.com/voipgrid/asyncapi)
+
+[A link to the OpenAPI spec.](https://gitlab.wearespindle.com/voipgrid/openapi/-/tree/main/specs/holodeck)
+
+
+## Quickstart
+
+```
+./scripts/verify_project.sh
+docker compose up -d server
+{% if include_database %}
+docker compose run --rm db-migrate
+{% endif %}
+```
+
+## Creating your own configuration
+
+If you want to add your own configuration to a service, you need to:
+- add the file `service/config.py` to your service.
+- implement a class named `Config` which holds your configuration. It is recommend to subclass `holo.config.service.ServiceConfig`.
+
+Example:
+```python
+from holo.config.service import ServiceConfig
+
+
+class Config(ServiceConfig):
+    CUSTOM_CONFIG: bool = True
+
+```
+
+You can access the configuration from the `holo.config`, nested under `service`.
+```python
+from holo.config import config
+
+config.service.CUSTOM_CONFIG
+```

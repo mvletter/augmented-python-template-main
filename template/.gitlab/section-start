@@ -1,0 +1,7 @@
+#!/bin/bash
+export TXT_LIGHT_CYAN_BOLD="\e[96;1m" && TXT_CLEAR="\e[0m"
+COLLAPSED=""
+if [ "$3" == "collapsed" ]; then
+    COLLAPSED="[collapsed=true]"
+fi
+echo -e "\e[0Ksection_start:`date +%s`:$1${COLLAPSED}\r\e[0K${TXT_LIGHT_CYAN_BOLD}$2${TXT_CLEAR}"

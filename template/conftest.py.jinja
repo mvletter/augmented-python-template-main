@@ -1,0 +1,438 @@
+import sys
+from collections.abc import AsyncGenerator, Callable
+from pathlib import Path
+from typing import Any, TextIO, cast
+{% if use_nats %}
+from unittest.mock import AsyncMock
+{% endif %}
+from uuid import UUID, uuid4
+
+import httpx
+import pytest
+from _pytest.config import Config
+from _pytest.nodes import Item
+from _pytest.reports import TestReport
+from _pytest.terminal import TerminalReporter
+from aioresponses import aioresponses
+from pytest_asyncio import is_async_test
+{% if include_redis %}
+from redis import asyncio as aioredis
+{% endif %}
+{% if include_database %}
+from sqlalchemy.ext.asyncio import AsyncSession
+{% endif %}
+from starlette.datastructures import URLPath
+from yarl import URL
+
+from scripts.fake_jwt import generate_fake_jwt
+{% if include_database and include_redis %}
+from service.injector import db_session, redis_session
+{% else %}
+{% if include_database %}
+from service.injector import db_session
+{% endif %}
+{% if include_redis %}
+from service.injector import redis_session
+{% endif %}
+{% endif %}
+from service.server import app
+
+
+pytest_plugins = "holo.testing.fixtures"
+
+type FastAPIDependencyOverrides = dict[Callable[..., Any], Callable[..., Any]]
+
+
+def pytest_collection_modifyitems(items) -> None:
+    """
+    Marks all tests with the same session event loop.
+    Allows sharing the database engine throughout the test suite.
+    """
+    pytest_asyncio_tests = (item for item in items if is_async_test(item))
+    session_scope_marker = pytest.mark.asyncio(loop_scope="session")
+    for async_test in pytest_asyncio_tests:
+        async_test.add_marker(session_scope_marker, append=False)
+
+
+@pytest.fixture
+{% if include_database and include_redis %}
+def global_dependency_overrides(dbsession: AsyncSession, redissession: aioredis.Redis) -> FastAPIDependencyOverrides:
+{% endif %}
+{% if include_database and not include_redis%}
+def global_dependency_overrides(dbsession: AsyncSession) -> FastAPIDependencyOverrides:
+{% endif %}
+{% if not include_database and include_redis %}
+def global_dependency_overrides(redissession: aioredis.Redis) -> FastAPIDependencyOverrides:
+{% endif %}
+{% if not include_database and not include_redis %}
+def global_dependency_overrides() -> FastAPIDependencyOverrides:
+{% endif %}
+    """
+    Override global dependencies for testing.
+    """
+    overrides: FastAPIDependencyOverrides = {}
+
+    {% if include_database %}
+    async def test_db_session() -> AsyncGenerator[AsyncSession]:
+        async with dbsession.begin_nested():
+            yield dbsession
+
+    overrides[db_session] = test_db_session
+    {% endif %}
+    {% if include_redis %}
+    overrides[redis_session] = lambda: redissession
+    {% endif %}
+    return overrides
+
+
+@pytest.fixture
+async def test_client(global_dependency_overrides: FastAPIDependencyOverrides) -> AsyncGenerator[httpx.AsyncClient]:
+    """
+    Test client to test FastAPI endpoints with dependency overrides.
+    """
+    for dependency, override in global_dependency_overrides.items():
+        app.dependency_overrides[dependency] = override
+
+    transport = httpx.ASGITransport(
+        app=app,
+        raise_app_exceptions=False,
+        client=("127.0.0.1", 123),
+    )
+    client = httpx.AsyncClient(transport=transport, base_url="http://testserver", timeout=3)
+    # Backwards compatible change for swapping out native TestClient.
+    setattr(client, "app", app)
+
+    yield client
+
+    app.dependency_overrides = {}
+
+    await client.aclose()
+
+
+@pytest.fixture
+async def reverse(test_client: httpx.AsyncClient) -> Callable[..., URLPath]:
+    """
+    Make url reversing easily available in test functions.
+    """
+    reverse_func = test_client.app.router.url_path_for
+    return reverse_func
+
+
+@pytest.fixture
+async def aioresponse() -> AsyncGenerator[aioresponses]:
+    """
+    AIOresponses fixture.
+    """
+    not_provided = object()
+
+    @staticmethod
+    def request_data_equals(
+        json: Any | None = not_provided,
+        url: str | None = None,
+        method: str | None = None,
+        data: Any | None = not_provided,
+    ) -> bool:
+        """
+        Helper method to quickly check if the payload for a given
+        request (!= response) matches the given data.
+        """
+        requests = None
+
+        if url and method:
+            requests = response.requests.get((method.upper(), URL(url)))
+            if not requests:
+                raise ValueError(f"No {method} requests found for {url}")
+        elif url is None and method is None:
+            if len(response.requests) == 1:
+                requests = list(response.requests.values())[0]
+        else:
+            for k, requests in response.requests.items():
+                if url and k[1] == URL(url) or method and k[0] == method.upper():
+                    break
+            else:
+                if url:
+                    raise ValueError(f"No requests found for {url}")
+                elif method:
+                    raise ValueError(f"No {method} requests found")
+
+        if requests:
+            request = requests[0]
+
+            if json != not_provided:
+                if json is None:
+                    return request.kwargs.get("json") is None
+                return request.kwargs.get("json") == json
+
+            if data != not_provided:
+                if data is None:
+                    return request.kwargs.get("data") is None
+                return request.kwargs.get("data") == data
+
+        return False
+
+    with aioresponses() as response:
+        response.request_data_equals = request_data_equals
+        yield response
+
+        # Matches are removed as they are used, so whatever is left: raise.
+        for response_mock in response._matches.values():
+            raise AssertionError(
+                f"{response_mock.method.upper()} request to {response_mock.url_or_pattern} never happened",
+            )
+
+
+@pytest.fixture
+def jwt_generator() -> Callable[..., str]:
+    """
+    Generate fake jwt token.
+    """
+
+    def generator(**kwargs) -> str:
+        kwargs.setdefault("user_id", uuid4())
+        kwargs.setdefault("original_token", "q18JLOJFB_Q78UOXvYURok18e-dq2ZV-HJ40Dv6CHpc")
+        kwargs.setdefault("portal_partner_id", uuid4())
+        kwargs.setdefault("first_name", "John")
+        kwargs.setdefault("preposition", "")
+        kwargs.setdefault("last_name", "Doe")
+
+        if "partner_id" not in kwargs:
+            kwargs["partner_id"] = None
+        if "client_id" not in kwargs and kwargs["partner_id"] is None:
+            kwargs["client_id"] = uuid4()
+
+        # Cast UUID fields to str.
+        for field in ("user_id", "partner_id", "client_id", "portal_partner_id"):
+            if field in kwargs and isinstance(kwargs[field], UUID):
+                kwargs[field] = str(kwargs[field])
+
+        return generate_fake_jwt(**kwargs)
+
+    return generator
+
+
+class HolodeckTerminalReport(TerminalReporter):  # type: ignore
+    """
+    Override for the pytest terminalreport for more control over the output.
+    """
+
+    def __init__(self, config: Config, file: TextIO | None = None) -> None:
+        """
+        Initialize our own reporter with some output disabled.
+        """
+        super().__init__(config, file)
+        # Disable filename output.
+        self.showfspath = False
+
+    def _get_progress_information_message(self) -> str:
+        """
+        Override to always show progress even if capturing output.
+        """
+        if self._session:
+            collected = self._session.testscollected
+            if collected:
+                progress = len(self._progress_nodeids_reported) * 100 // collected
+                return f" [{progress:3d}%]"
+        return " [100%]"
+
+    def _determine_show_progress_info(self) -> bool:
+        """
+        Return True if progress information should be displayed, based on the
+        current config.
+        Override the parent class to show progress when capturing output.
+        """
+        # Do not show progress if we are showing fixture setup/teardown.
+        if self.config.getoption("setupshow"):
+            return False
+        return self.config.getini("console_output_style") == "progress"
+
+    def pytest_runtest_logreport(self, report: TestReport) -> None:
+        """
+        Write output to the terminal for the given report.
+        We override this whole method to make the parallel/non-parallel
+        reporting identical.
+
+        Output will be like:
+        [ 10%]  Test docstring. PASSED (0.5435s)
+
+        Args:
+            report (Report): The test report to be written.
+        """
+        rep = report
+        res = self.config.hook.pytest_report_teststatus(report=rep, config=self.config)
+        category, letter, word = res
+
+        if isinstance(word, tuple):
+            word, markup = word
+        else:
+            markup = None
+        self.stats.setdefault(category, []).append(rep)
+        self._tests_ran = True
+
+        if not letter and not word:
+            # probably passed setup/teardown
+            return
+
+        self._progress_nodeids_reported.add(rep.nodeid)
+        if markup is None:
+            if rep.passed:
+                markup = {"green": True}
+            elif rep.failed:
+                markup = {"red": True}
+            elif rep.skipped:
+                markup = {"yellow": True}
+            else:
+                markup = {}
+
+        line = rep.nodeid
+        for propname, propvalue in report.user_properties:
+            if propname == "test_name":
+                line = cast(str, propvalue)
+                break
+
+        if self._show_progress_info:
+            self._tw.write(f"{self._get_progress_information_message()} ", cyan=True)
+        else:
+            self._tw.write(" ")
+
+        self._tw.write(line)
+        self._tw.line(word, **markup)
+        self.currentfspath = -2
+
+    @property
+    def showlongtestinfo(self) -> bool:
+        return False
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config: Config) -> None:
+    """
+    Ensure using the custom terminalreporter when verbosity >= 2.
+    """
+    if config.option.verbose >= 2:
+        # Configure the settings if not done so already.
+        # For example when doing pytest -h.
+        reporter = HolodeckTerminalReport(config, sys.stdout)
+
+        config.pluginmanager.unregister(name="terminalreporter")
+        config.pluginmanager.register(reporter, "terminalreporter")
+
+
+def pytest_itemcollected(item: Item) -> Item:
+    """
+    Override the name of a collected test item.
+    """
+    FOLDERS_OF_INTEREST = {"core", "data", "api"}
+
+    # Get the node and initial name setup.
+    node = item.obj
+    name = node.__name__
+
+    # Handle docstring.
+    if node.__doc__:
+        # Find the first non-empty docstring line.
+        name = node.__doc__.strip().split("\n")[0]
+    else:
+        name = f"MISSING DOCSTRING FOR TEST: {name}"
+
+    # Add folder prefix if applicable.
+    test_path = Path(str(item.fspath))
+    for folder in FOLDERS_OF_INTEREST:
+        if folder in str(test_path).lower():
+            name = f"[{folder}] {name}"
+            break
+
+    # Handle parameterized args.
+    suffix = " "
+    if getattr(item, "callspec", None):
+        suffix = f" [{item.callspec.id}] "
+
+    # Set the test name in user properties.
+    item.user_properties.append(("test_name", f"{name}{suffix}"))
+    return item
+{% if use_nats %}
+
+
+@pytest.fixture(autouse=True)
+async def _fake_nats(mocker) -> None:
+    """
+    Patch NATS objects to never actually subscribe or publish data.
+    """
+    mocker.patch("holo.data.connectors.NatsConnector.startup")
+    mocker.patch("holo.data.connectors.NatsConnector.shutdown")
+    mocker.patch("holo.nats.objects.NatsObjectStore.connect")
+    mocker.patch("holo.nats.jetstream.NatsStreamSubscriber.connect")
+    mocker.patch("holo.nats.jetstream.NatsStreamSubscriber.start")
+    mocker.patch("holo.nats.plain.NatsSubscriber.connect")
+    mocker.patch("holo.nats.plain.NatsSubscriber.start")
+    {% if use_resgate %}
+    mocker.patch("holo.resclient.client.ResClient.startup")
+    mocker.patch("holo.resclient.client.ResClient.shutdown")
+    {% endif %}
+
+    # Patch publish, even if it's already being patched in
+    # nats_publish/resgate_publish. This way, it is also patched when those
+    # fixtures are not used.
+    mocker.patch("holo.nats.jetstream.NatsStreamSubscriber.publish")
+    mocker.patch("holo.nats.plain.NatsSubscriber.publish")
+    {% if use_resgate %}
+    mocker.patch("holo.resclient.client.ResClient._publish")
+    {% endif %}
+
+
+@pytest.fixture
+async def nats_publish(mocker, _fake_nats) -> AsyncMock:
+    """
+    Return the mocked publish method of the NATS instances for use in tests.
+
+    Example:
+    async def test(nats_publish):
+        entity = EntityFactory.build(
+            state="some_state",
+        )
+        await MyUsecase()(entity)
+
+        args, kwargs = nats_publish.call_args
+        assert kwargs["subject"] == "object.changed.v1"
+
+        event = MyEvent.model_validate_json(kwargs["payload"].decode())
+        assert event.name == "my_event"
+        assert event.payload.some_id == entity.some_id
+    """
+    mocked_publish = AsyncMock()
+    mocker.patch("holo.nats.jetstream.NatsStreamSubscriber.publish", mocked_publish)
+    mocker.patch("holo.nats.plain.NatsSubscriber.publish", mocked_publish)
+
+    # By referencing fake_nats we ensure our local mocked_publish is
+    # activated last.
+    _fake_nats  # type: ignore # noqa
+
+    return mocked_publish
+
+
+@pytest.fixture
+async def resgate_publish(mocker, _fake_nats) -> AsyncMock:
+    """
+    Return the mocked publish method of the ResClient instance for use in tests.
+
+    Example:
+    async def test(resgate_publish):
+        entity = EntityFactory.build(
+            state="some_state",
+        )
+        await MyUsecase()(entity)
+
+        resgate_publish.assert_called_with(
+            f"event.myresource.{event.payload.some_id}.change",
+            {"values": {"some_field": entity.some_value}},
+            headers=None,
+        )
+    """
+    mocked_publish = AsyncMock()
+    mocker.patch("holo.resclient.client.ResClient._publish", mocked_publish)
+
+    # By referencing fake_nats we ensure our local mocked_publish is
+    # activated last.
+    _fake_nats  # type: ignore # noqa
+
+    return mocked_publish
+{% endif %}

@@ -1,0 +1,2 @@
+#!/bin/bash
+echo -e "\e[0Ksection_end:`date +%s`:$1\r\e[0K"

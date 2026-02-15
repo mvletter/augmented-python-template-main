@@ -1,0 +1,93 @@
+{% if include_database or include_redis or use_nats %}
+{% if include_database %}
+import logging
+{% endif %}
+{% if include_database or include_redis %}
+from collections.abc import AsyncGenerator
+{% endif %}
+{% if include_database %}
+
+from asyncpg.exceptions import UndefinedTableError
+{% endif %}
+{% if include_redis %}
+{% if not include_database %}
+
+{% endif %}
+from redis.asyncio import Redis
+{% endif %}
+{% if include_database %}
+from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.ext.asyncio import AsyncSession
+{% endif %}
+{% if include_database or include_redis %}
+
+{% endif %}
+{% if include_database %}
+from holo.config import config
+{% endif %}
+{% if include_database and use_nats and include_redis %}
+from holo.data.connectors import SingletonDBConnector, SingletonNatsConnector, SingletonRedisConnector
+{% elif include_database and use_nats %}
+from holo.data.connectors import SingletonDBConnector, SingletonNatsConnector
+{% elif include_database and include_redis %}
+from holo.data.connectors import SingletonDBConnector, SingletonRedisConnector
+{% elif use_nats and include_redis %}
+from holo.data.connectors import SingletonNatsConnector, SingletonRedisConnector
+{% elif include_database %}
+from holo.data.connectors import SingletonDBConnector
+{% elif use_nats %}
+from holo.data.connectors import SingletonNatsConnector
+{% elif include_redis %}
+from holo.data.connectors import SingletonRedisConnector
+{% endif %}
+
+
+{% if include_database %}
+db_connector = SingletonDBConnector()
+{% endif %}
+{% if include_redis %}
+redis_connector = SingletonRedisConnector()
+{% endif %}
+{% if use_nats %}
+nats_connector = SingletonNatsConnector()
+{% endif %}
+{% if include_database %}
+logger = logging.getLogger(__name__)
+
+
+async def db_session() -> AsyncGenerator[AsyncSession]:
+    """
+    Get new DB session.
+    """
+    session = db_connector.new_session()
+    try:
+        yield session
+        await session.commit()
+    except ProgrammingError as e:
+        if config.service.ENVIRONMENT == "" and str(UndefinedTableError) in str(e.orig):
+            logger.warning("Detected missing tables, did you run: `docker compose run --rm db-migrate` ?")
+        raise
+    except Exception:
+        await session.rollback()
+        logger.warning("did a database rollback")  # in k8s this will always print the trace_id
+        raise
+    finally:
+        await session.close()
+{% endif %}
+{% if include_redis %}
+
+
+async def redis_session() -> AsyncGenerator[Redis]:
+    """
+    Get redis session.
+    """
+    connection = redis_connector.new_connection()
+    try:
+        yield connection
+    finally:
+        await connection.aclose()
+{% endif %}
+
+
+{% endif %}
+# Add your own dependencies here.

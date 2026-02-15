@@ -1,0 +1,110 @@
+import logging
+from enum import IntEnum
+from http import HTTPStatus
+from typing import cast
+
+from fastapi import Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import HTTPException as FastapiHTTPException, RequestValidationError
+from fastapi.responses import JSONResponse, Response
+
+from holo.adapters.http.exceptions import EXCEPTIONS_MAPPER_4XX, HTTPException
+from holo.adapters.http.schemas import ProblemSchema
+{% if include_database or include_redis %}
+from holo.core.exceptions import is_database_shutting_down_error
+{% endif %}
+from holo.health import HealthChecker
+
+
+logger = logging.getLogger(__name__)
+
+
+class ProblemJSONResponse(JSONResponse):
+    media_type = "application/problem+json"
+
+
+PerPageEnum = IntEnum("PerPage", {"10": 10, "25": 25, "100": 100, "1000": 1000})
+
+
+async def health_check_response(health_checker: HealthChecker) -> JSONResponse:
+    """
+    A helper function to return a FastAPI related response based on the health_checker status.
+    """
+    health_dict = await health_checker.check()
+    response_code = HTTPStatus.OK.value
+    if health_dict["status"] == "down":
+        response_code = HTTPStatus.SERVICE_UNAVAILABLE.value
+
+    return JSONResponse(content=jsonable_encoder(health_dict), status_code=response_code)
+
+
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """
+    Turn the default HTTP_422_UNPROCESSABLE_ENTITY into a HTTP_400_BAD_REQUEST.
+    """
+    errors = exc.errors()
+
+    # Reduce error context, such as:
+    #  'url': 'https://errors.pydantic.dev/2.11/v/value_error'
+    for error in errors:
+        if "url" in error and "pydantic.dev/" in error["url"]:
+            del error["url"]
+
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content=jsonable_encoder({"detail": errors, "error_code": EXCEPTIONS_MAPPER_4XX[400]}),
+    )
+
+
+async def unknown_exception_handler(request: Request, exc: Exception) -> Response:
+    """
+    Turn unknown exceptions into a ProblemJSONResponse with the ProblemSchema.
+    HTTPExceptions are thrown on purpose so exclude those when they occur.
+    """
+    if type(exc) not in [HTTPException, FastapiHTTPException]:
+        logger.exception(exc)
+
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        {% if include_database or include_redis %}
+        if is_database_shutting_down_error(exc):
+            # Trigger ingress to retry since we expect to be
+            # available soon, or perhaps already are on another pod.
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+        {% endif %}
+        return ProblemJSONResponse(
+            status_code=status_code,
+            content=jsonable_encoder(
+                ProblemSchema(
+                    type="about:blank",
+                    title=str(exc.__class__.__name__),
+                    status=status_code,
+                    detail="Unknown Error",
+                    instance="Unknown Error",
+                ).model_dump(),
+            ),
+        )
+
+    return await http_exception_handler(request, cast(HTTPException, exc))
+
+
+async def standardized_http_exception_handler(request: Request, exc: HTTPException) -> Response:
+    """
+    Turn 4xx HTTPExceptions into our standard errors with a message and
+    a error_code. The message will be the standard `http.HTTPStatus(status_code)` or
+    custom "detail" message that was supplied.
+    """
+    if type(exc) is HTTPException and 400 <= exc.status_code < 500:
+        error_code = exc.error_code or EXCEPTIONS_MAPPER_4XX.get(exc.status_code, "")
+
+        if error_code:
+            return JSONResponse(
+                {"error_code": error_code, "message": exc.detail},
+                status_code=exc.status_code,
+                headers=getattr(exc, "headers", None),
+            )
+
+    # No error error_code was found or the exception was not a 4xx exception, handle
+    # it the normal way.
+    return await http_exception_handler(request, exc)

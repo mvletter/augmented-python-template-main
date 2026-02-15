@@ -1,0 +1,74 @@
+import logging
+
+{% if include_database %}
+from fastapi import status
+from fastapi.encoders import jsonable_encoder
+{% endif %}
+from fastapi.responses import JSONResponse
+from starlette_prometheus import metrics  # noqa
+
+from holo.adapters.http.utils import health_check_response
+{% if include_database and include_redis %}
+from holo.data.connectors import SingletonDBConnector, SingletonRedisConnector
+{% elif include_database %}
+from holo.data.connectors import SingletonDBConnector
+{% elif include_redis %}
+from holo.data.connectors import SingletonRedisConnector
+{% endif %}
+from holo.health import {% if include_database or include_redis %}Check, {% endif %}SingletonHealthChecker
+{% if include_database %}
+
+
+try:
+    from service.monitoring.sql import SqlMonitor
+except ImportError:
+    SqlMonitor = None
+{% endif %}
+
+
+logger = logging.getLogger(__name__)
+
+
+async def ping() -> dict[str, bool]:
+    """
+    Needed for the kubernetes monitoring. Can leave as is.
+    """
+    return {"ok": True}
+
+
+async def health() -> JSONResponse:
+    """
+    Get health status for service related components.
+    """
+    checks = []
+    {% if include_database %}
+    db = SingletonDBConnector()
+    checks.append(Check("database", db.check_connection))
+    {% endif %}
+    {% if include_redis %}
+    redis = SingletonRedisConnector()
+    checks.append(Check("redis", redis.check_connection))
+    {% endif %}
+    # NOTE: Extend with your own checks if needed. See holo.health for more info.
+    checker = SingletonHealthChecker(checks)
+    return await health_check_response(health_checker=checker)
+{% if include_database %}
+
+
+async def debug_sql() -> JSONResponse:
+    """
+    Return current stats regarding executed queries.
+
+    These stats are only gathered when config.database.SQL_PRINT_SUMMARY is True.
+    """
+    stats = {}
+    if SqlMonitor:
+        stats = SqlMonitor.summarize()
+    return JSONResponse(content=jsonable_encoder(stats), status_code=status.HTTP_200_OK)
+{% endif %}
+
+
+# If you need anything more than the import metrics endpoint
+# above feel free to remove that import and implement one yourself here.
+# async def metrics():
+#     pass

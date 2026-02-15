@@ -1,0 +1,2 @@
+ignored:
+  - DL3008 # ignore: Pin versions in apt get install.

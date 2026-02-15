@@ -1,0 +1,25 @@
+{% if include_database or include_redis %}
+import pytest
+
+{% endif %}
+{% if include_database %}
+
+@pytest.fixture(autouse=True)
+def _patch_streams_dbsession(dbsession, mocker):
+    """
+    Patch new session request to return the dbsession that is used within tests.
+    """
+    mocker.patch("holo.adapters.nats.handler_utils.db_connector.new_session", return_value=dbsession)
+{% endif %}
+{% if include_redis %}
+{% if include_database %}
+
+{% endif %}
+
+@pytest.fixture(autouse=True)
+def _patch_streams_redissession(redissession, mocker):
+    """
+    Patch new session request to return the redis that is used within tests.
+    """
+    mocker.patch("holo.adapters.nats.handler_utils.redis_connector.new_connection", return_value=redissession)
+{% endif %}

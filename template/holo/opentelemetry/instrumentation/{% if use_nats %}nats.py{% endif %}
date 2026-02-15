@@ -1,0 +1,235 @@
+"""
+Based on https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-kafka-python .
+"""  # noqa
+
+import inspect
+import json
+from collections.abc import Callable, Collection
+from logging import getLogger
+
+from nats.aio.msg import Msg
+from nats.js.client import JetStreamContext
+from opentelemetry import propagate, trace
+from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+from opentelemetry.instrumentation.utils import unwrap
+from opentelemetry.propagators import textmap
+from opentelemetry.semconv._incubating.attributes.messaging_attributes import (
+    MESSAGING_DESTINATION_NAME,
+    MESSAGING_SYSTEM,
+)
+from opentelemetry.trace import Tracer
+from wrapt import wrap_function_wrapper
+
+
+try:
+    from holo.nats.client import NatsSubscription
+
+    has_faststream = True
+except ImportError:
+    has_faststream = False
+
+try:
+    from holo.resclient import handlers
+    from holo.resclient.client import ResClient
+
+    has_resgate = True
+except ModuleNotFoundError:
+    has_resgate = False
+
+
+logger = getLogger(__name__)
+
+
+class NatsInstrumentor(BaseInstrumentor):
+    """
+    An instrumentor for nats module.
+    See `BaseInstrumentor`.
+    """
+
+    version = "0.1.0"
+
+    def instrumentation_dependencies(self) -> Collection[str]:
+        return ("nats-py >= 2.1.0",)
+
+    def _instrument(self, tracer_provider=None) -> None:
+        """
+        Instruments the nats module.
+
+        Args:
+            tracer_provider: a TracerProvider, defaults to global.
+        """
+        tracer = trace.get_tracer(self.__class__.__name__, self.version, tracer_provider=tracer_provider)
+
+        if has_faststream:
+            wrap_function_wrapper(NatsSubscription, "on_message", _wrap_on_message(tracer))
+            wrap_function_wrapper(JetStreamContext, "publish", _wrap_js_publish(tracer))
+
+        if has_resgate:
+            self.handler_subclasses = inspect.getmembers(
+                handlers,
+                lambda member: (
+                    inspect.isclass(member) and issubclass(member, handlers.Handler) and member != handlers.Handler
+                ),
+            )
+            for handler_name, handler_subclass in self.handler_subclasses:
+                wrap_function_wrapper(handler_subclass, "_handle_request", _wrap_handle_request(tracer))
+            wrap_function_wrapper(ResClient, "_publish", _wrap_resgate_publish(tracer))
+
+    def _uninstrument(self, **kwargs) -> None:
+        if has_resgate:
+            for handler_name, handler_subclass in self.handler_subclasses:
+                unwrap(handler_subclass, "_handle_request")
+            unwrap(ResClient, "_publish")
+
+        if has_faststream:
+            unwrap(JetStreamContext, "publish")
+            unwrap(NatsSubscription, "on_message")
+
+
+class NatsContextGetter(textmap.Getter[textmap.CarrierT]):
+    def get(self, carrier: textmap.CarrierT, key: str) -> list[str] | None:
+        if carrier is None:
+            return None
+
+        for item_key, value in carrier:
+            if item_key.lower() == key and value is not None:
+                return [value]
+        return None
+
+    def keys(self, carrier: textmap.CarrierT) -> list[str]:
+        if carrier is None:
+            return []
+        return [key for (key, value) in carrier]
+
+
+class NatsContextSetter(textmap.Setter[textmap.CarrierT]):
+    def set(self, carrier: textmap.CarrierT, key: str, value: str) -> None:
+        if carrier is None or key is None:
+            return
+
+        carrier.append((key, value))
+
+
+_nats_getter = NatsContextGetter()
+_nats_setter = NatsContextSetter()
+
+
+def _wrap_js_publish(tracer: Tracer) -> Callable:
+    async def _traced_publish(publish_func, instance, args, kwargs):
+        topic = kwargs["subject"]
+        payload = kwargs["payload"]
+
+        headers = list((kwargs.get("headers") or {}).items())
+
+        event_name = json.loads(payload)["name"]
+        span_name = f"PUBLISH {event_name}"
+        with tracer.start_as_current_span(
+            span_name,
+            kind=trace.SpanKind.PRODUCER,
+        ) as span:
+            if span.is_recording():
+                span.set_attribute(MESSAGING_SYSTEM, "nats-jetstream")
+                span.set_attribute(MESSAGING_DESTINATION_NAME, topic)
+            propagate.inject(
+                headers,
+                context=trace.set_span_in_context(span),
+                setter=_nats_setter,
+            )
+
+            kwargs["headers"] = dict(headers)
+            return await publish_func(*args, **kwargs)
+
+    return _traced_publish
+
+
+def _wrap_on_message(tracer: Tracer) -> Callable:
+    async def _traced_on_message(on_message_func, instance, args, kwargs):
+        msg: Msg
+        (msg,) = args
+
+        headers = list((msg.headers or {}).items())
+        extracted_context = propagate.extract(headers, getter=_nats_getter)
+
+        event_name = json.loads(msg.data)["name"]
+        span_name = f"ON_MESSAGE {event_name}"
+        with tracer.start_as_current_span(
+            span_name,
+            context=extracted_context,
+            kind=trace.SpanKind.CONSUMER,
+        ) as span:
+            if span.is_recording():
+                span.set_attribute(MESSAGING_SYSTEM, "nats-jetstream")
+                span.set_attribute(MESSAGING_DESTINATION_NAME, msg.subject)
+            propagate.inject(
+                headers,
+                context=trace.set_span_in_context(span),
+                setter=_nats_setter,
+            )
+
+            msg.headers = dict(headers)
+            await on_message_func(msg)
+
+    return _traced_on_message
+
+
+def _wrap_resgate_publish(tracer: Tracer) -> Callable:
+    async def _traced_resgate_publish(resgate_publish_func, instance: ResClient, args, kwargs):
+        subject, *_ = args
+
+        headers = list((kwargs.get("headers") or {}).items())
+
+        topic_parts = subject.split(".")
+        event_name = f"{topic_parts[0]}_{topic_parts[-1]}"
+        if len(topic_parts) > 2:
+            resource_id = ".".join(topic_parts[1:-2])
+            span_name = f"{event_name.upper()} {resource_id}"
+        else:
+            span_name = event_name.upper()
+        with tracer.start_as_current_span(
+            span_name,
+            kind=trace.SpanKind.PRODUCER,
+        ) as span:
+            if span.is_recording():
+                span.set_attribute(MESSAGING_SYSTEM, "nats-resgate")
+                span.set_attribute(MESSAGING_DESTINATION_NAME, subject)
+            propagate.inject(
+                headers,
+                context=trace.set_span_in_context(span),
+                setter=_nats_setter,
+            )
+
+            kwargs["headers"] = dict(headers)
+            return await resgate_publish_func(*args, **kwargs)
+
+    return _traced_resgate_publish
+
+
+def _wrap_handle_request(tracer: Tracer) -> Callable:
+    async def _traced_handle_request(_handle_request_func, instance: handlers.Handler, args, kwargs):
+        msg: Msg
+        (msg,) = args
+
+        headers = list((msg.headers or {}).items())
+        extracted_context = propagate.extract(headers, getter=_nats_getter)
+
+        operation, topic = instance._subject.split(".", 1)
+        topic = topic.removesuffix(".*")
+        span_name = f"{operation.upper()} {topic}"
+        with tracer.start_as_current_span(
+            span_name,
+            context=extracted_context,
+            kind=trace.SpanKind.CONSUMER,
+        ) as span:
+            if span.is_recording():
+                span.set_attribute(MESSAGING_SYSTEM, "nats-resgate")
+                span.set_attribute(MESSAGING_DESTINATION_NAME, msg.subject)
+            propagate.inject(
+                headers,
+                context=trace.set_span_in_context(span),
+                setter=_nats_setter,
+            )
+
+            msg.headers = dict(headers)
+            return await _handle_request_func(msg)
+
+    return _traced_handle_request

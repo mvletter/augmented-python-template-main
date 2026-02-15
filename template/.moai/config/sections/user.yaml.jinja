@@ -1,0 +1,10 @@
+# User Configuration
+# User-specific information and preferences
+
+user:
+  # User name for personalization and commit attribution
+{% if claude_user_name %}
+  name: "{{ claude_user_name }}"
+{% else %}
+  name: "developer"
+{% endif %}

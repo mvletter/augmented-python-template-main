@@ -1,0 +1,312 @@
+import json
+import os
+import re
+import time
+from collections.abc import Callable
+from copy import deepcopy
+from datetime import datetime
+from uuid import UUID
+
+import sqlparse
+from rich.console import Console
+from rich.style import Style
+from rich.theme import Theme
+from rich.traceback import RegexHighlighter
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+
+
+class KeywordHighlighter(RegexHighlighter):
+    """
+    Trimmed version of ReprHighlighter to reduce regexes lookups.
+    """
+
+    base_style = "repr."
+
+    highlights = [
+        r"(?P<keyword>(^|\s)[A-Z]+(?=\s|$))",
+    ]
+
+
+class NumberHighlighter(RegexHighlighter):
+    """
+    Trimmed version of ReprHighlighter to reduce regexes lookups.
+    """
+
+    base_style = "repr."
+
+    highlights = [
+        r"(?P<number>(?<!\w)\-?[0-9]+\.?[0-9]*(e[-+]?\d+?)?\b|0x[0-9a-fA-F]*)",
+    ]
+
+
+# Bolden SQL keywords.
+statement_console = Console(
+    highlight=True,
+    highlighter=KeywordHighlighter(),
+    theme=Theme({"repr.keyword": Style(bold=True)}),
+)
+
+# Color numbers (count/time).
+summary_console = Console(
+    highlight=True,
+    highlighter=NumberHighlighter(),
+)
+
+
+class SqlMonitor:
+    stats = {}
+    request_stats = {}
+
+    @classmethod
+    def _sort_dict(cls, d: dict, key: Callable, reverse: bool = True) -> None:
+        """
+        Replace contents of d with new order.
+        """
+        new_ordered_d = dict(sorted(d.items(), key=key, reverse=reverse))
+        d.clear()
+        d.update(new_ordered_d)
+
+    @classmethod
+    def _get_table_from_sql(cls, sql: str) -> str | None:
+        """
+        Return table name.
+        """
+        match = re.search("(?:INSERT INTO|UPDATE|FROM) ([a-z_]+)", sql.replace("\n", ""))
+        if not match:
+            return
+        return match.group(1)
+
+    @classmethod
+    def _get_action_from_sql(cls, sql: str) -> str:
+        """
+        Return one of insert/update/delete/select.
+        """
+        return sql.lstrip().split(" ", 1)[0].lower()
+
+    @classmethod
+    def _record(cls, prepared_statement: str, duration: float, parameters: tuple | list, executemany: bool) -> None:
+        table, action = cls._get_table_from_sql(prepared_statement), cls._get_action_from_sql(prepared_statement)
+        if not table:
+            return
+
+        if cls.print_request:
+            from service.monitoring.middleware import SqlMonitorMiddleware
+
+            try:
+                # Get id set by middleware to differentiate requests.
+                request_id = SqlMonitorMiddleware.request_context.get()
+                if request_id not in cls.request_stats:
+                    cls.request_stats[request_id] = {
+                        "time": 0,
+                        "count": 0,
+                    }
+                cls.request_stats[request_id]["count"] += 1
+                cls.request_stats[request_id]["time"] += duration
+                if executemany:
+                    if "executemany" not in cls.request_stats[request_id]:
+                        cls.request_stats[request_id]["executemany"] = 0
+                    cls.request_stats[request_id]["executemany"] += len(parameters)
+            except LookupError:
+                pass
+
+        # Remove newlines, extra whitespace etc.
+        sql_small = re.sub(r"\s+", " ", prepared_statement.replace("\n", " ").strip())
+        sql_small = re.sub(r" ?\/\*.*\*/$", "", sql_small)
+
+        # Replace all placeholders with %s.
+        sql_small = re.sub(r"\$\d+::[a-zA-Z]+", "%s", sql_small)
+
+        first_params = parameters[0] if executemany else parameters
+        first_params = [str(p) if isinstance(p, UUID | datetime) else p for p in first_params]
+        first_params = tuple(f"{p!r}" for p in first_params)
+        sql = sql_small % first_params
+
+        if cls.print_summary:
+            if action == "select":
+                sql_small = re.sub("SELECT .* FROM", "SELECT * FROM", sql_small)
+            if action in ("select", "insert"):
+                # Collapse placeholders (IN, VALUES).
+                while placeholder_sets := re.findall(r"(\((?:%s, )+%s\)(?:, )?)", sql_small):
+                    placeholders = placeholder_sets[0]
+                    placeholder_count = placeholders.count("%s")
+                    sql_small = re.sub(placeholders, f"%s x {placeholder_count}", sql_small)
+
+            # Increment stats for duplicate queries.
+            if sql_small not in cls.stats["duplicates"]:
+                cls.stats["duplicates"][sql_small] = 0
+            cls.stats["duplicates"][sql_small] += 1
+            cls._sort_dict(cls.stats["duplicates"], lambda q: q[1])
+
+            # Increment stats for table.
+            if table not in cls.stats["tables"]:
+                cls.stats["tables"][table] = {
+                    "time": 0,
+                    "count": 0,
+                }
+            cls.stats["tables"][table]["time"] += duration
+            cls.stats["tables"][table]["count"] += 1
+            if executemany:
+                if "executemany" not in cls.stats["tables"][table]:
+                    cls.stats["tables"][table]["executemany"] = 0
+                cls.stats["tables"][table]["executemany"] += len(parameters)
+            cls._sort_dict(cls.stats["tables"], lambda q: (q[1]["time"], q[1]["count"]))
+
+            if action not in cls.stats["tables"][table]:
+                cls.stats["tables"][table][action] = {
+                    "time": 0,
+                    "count": 0,
+                }
+            cls.stats["tables"][table][action]["time"] += duration
+            cls.stats["tables"][table][action]["count"] += 1
+            if executemany:
+                if "executemany" not in cls.stats["tables"][table][action]:
+                    cls.stats["tables"][table][action]["executemany"] = 0
+                cls.stats["tables"][table][action]["executemany"] += len(parameters)
+
+            # Increment stats for action.
+            if action not in cls.stats["actions"]:
+                cls.stats["actions"][action] = {
+                    "time": 0,
+                    "count": 0,
+                }
+            cls.stats["actions"][action]["time"] += duration
+            cls.stats["actions"][action]["count"] += 1
+            if executemany:
+                if "executemany" not in cls.stats["actions"][action]:
+                    cls.stats["actions"][action]["executemany"] = 0
+                cls.stats["actions"][action]["executemany"] += len(parameters)
+            cls._sort_dict(cls.stats["actions"], lambda q: (q[1]["time"], q[1]["count"]))
+
+            # Increment total stats.
+            cls.stats["total"]["time"] += duration
+            cls.stats["total"]["count"] += 1
+            if executemany:
+                if "executemany" not in cls.stats["total"]:
+                    cls.stats["total"]["executemany"] = 0
+                cls.stats["total"]["executemany"] += len(parameters)
+
+            # Increment stats for slow queries.
+            for q in cls.stats["slow"]:
+                if q["sql_small"] == sql_small:  # noqa: SIM102
+                    if not executemany or executemany and q["executemany"] == len(parameters):
+                        q["count"] += 1
+                        q["sum"] += duration
+                        q["min"] = min(q["min"], duration)
+                        if duration > q["max"]:
+                            q["sql_small"] = sql_small
+                        q["max"] = max(q["max"], duration)
+                        break
+            else:
+                cls.stats["slow"].append(
+                    {
+                        "sum": duration,
+                        "min": duration,
+                        "max": duration,
+                        "count": 1,
+                        "executemany": len(parameters) if executemany else 0,
+                        "sql": f"{sql[:2048]}... (truncated)" if len(sql) > 2048 else sql,
+                        "sql_small": sql_small,
+                    },
+                )
+            slowest = sorted(cls.stats["slow"], key=lambda q: q["sum"], reverse=True)
+            cls.stats["slow"] = slowest
+
+    @classmethod
+    def _round_time_in_stats(cls, stats: dict) -> dict:
+        for k, v in stats.items():
+            if isinstance(v, dict):
+                stats[k] = cls._round_time_in_stats(v)
+            if isinstance(v, list):
+                for i in range(len(v)):
+                    if isinstance(v[i], dict):
+                        v[i] = cls._round_time_in_stats(v[i])
+            elif isinstance(v, float):
+                stats[k] = round(v, 3)
+
+        return stats
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.stats = {
+            "total": {
+                "time": 0,
+                "count": 0,
+            },
+            "actions": {},
+            "tables": {},
+            "slow": [],
+            "duplicates": {},
+        }
+        cls.request_stats = {}
+
+    @classmethod
+    def init(cls, options: str = "") -> None:
+        cls.reset()
+
+        cls.print_statement = "statement" in options
+        cls.print_summary = "summary" in options
+        cls.print_request = "request" in options
+
+        if not options.strip():
+            return
+
+        @event.listens_for(Engine, "before_cursor_execute")
+        def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            # There is no way to access the actual db query time, this is
+            # the best alternatve.
+            context._query_start_time = time.perf_counter()
+
+        @event.listens_for(Engine, "after_cursor_execute")
+        def after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            duration = time.perf_counter() - context._query_start_time
+
+            cls._record(statement, duration, parameters, executemany)
+
+            if cls.print_statement:
+                sql = sqlparse.format(
+                    statement,
+                    reindent=True,
+                    strip_comments=True,
+                )
+
+                msg = f"\n{sql}"
+                if executemany:
+                    msg = f"{msg}\nExecutemany: [bold cyan]{len(parameters)}[/bold cyan]"
+                msg = f"{msg}\nExecution time: [bold cyan]{duration:.6f}s[/bold cyan]"
+
+                statement_console.print(msg)
+
+    @classmethod
+    def get_request_stats(cls, request_id: str) -> dict:
+        return cls._round_time_in_stats(cls.request_stats.pop(request_id, {}))
+
+    @classmethod
+    def summarize(cls, output_filename: str = "", output_overwrite: bool = False) -> dict:
+        if not cls.print_summary:
+            return {}
+
+        stats = cls._round_time_in_stats(deepcopy(cls.stats))
+
+        for sql, count in cls.stats["duplicates"].items():
+            if count == 1:
+                del stats["duplicates"][sql]
+
+        if output_filename:
+            if os.path.exists(output_filename) and not output_overwrite:
+                filename, ext = os.path.splitext(output_filename)
+
+                i = 1
+                safe_output_filename = f"{filename}.{i}{ext}"
+                while os.path.exists(safe_output_filename):
+                    i += 1
+                    safe_output_filename = f"{filename}.{i}.{ext}"
+
+                output_filename = safe_output_filename
+
+            with open(output_filename, "w") as f:
+                f.write(json.dumps(stats, indent=4))
+        else:
+            summary_console.print(json.dumps(stats, indent=2), highlight=True)
+
+        return stats

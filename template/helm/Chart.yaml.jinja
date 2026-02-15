@@ -1,0 +1,10 @@
+apiVersion: v2
+name: {{ service_name }}
+description: {{ description }}
+type: application
+version: 0.1.0
+
+dependencies:
+  - name: holodeck-service
+    version: 5.10.5
+    repository: https://gitlab.wearespindle.com/api/v4/projects/525/packages/helm/stable

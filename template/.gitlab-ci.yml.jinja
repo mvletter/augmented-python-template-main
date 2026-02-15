@@ -1,0 +1,406 @@
+variables:
+  PIP_CACHE_DIR: "${CI_PROJECT_DIR}/.cache/pip"
+  PRE_COMMIT_HOME: "${CI_PROJECT_DIR}/.cache/pre-commit"
+  GIT_DEPTH: 15
+  PYTHON_VERSION: "3.14"
+  OS_CODENAME: "trixie"
+  UV_LINK_MODE: "copy"
+
+image: "ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-${OS_CODENAME}"
+
+include:
+  - project: infra/hd3/gitlab-ci
+    file: service.yml
+
+default:
+  interruptible: true
+
+cache:
+  key: ${CI_PIPELINE_ID}
+  paths:
+    - ${PIP_CACHE_DIR}
+    - ${PRE_COMMIT_HOME}
+    - .venv/
+
+stages:
+  - static analysis
+  - test
+  - build
+  - staging
+  - production
+  - template update
+
+################################################################################
+### Static analysis stage
+################################################################################
+
+conventional-commits:
+  stage: static analysis
+  before_script:
+    - uv sync --only-group ci
+  script:
+    - |
+      for commit_hash in $(git log --format="%H" "${CI_MERGE_REQUEST_DIFF_BASE_SHA}..${CI_COMMIT_SHA}")
+      do
+        git log --format="%B" -n 1 "$commit_hash" > commit_message.txt
+        uv run conventional-pre-commit commit_message.txt
+      done
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+linting:
+  stage: static analysis
+  before_script:
+    - uv sync --only-group ci
+  script:
+    - .gitlab/section-start "pre-commit" "pre-commit run --color=always --all-files"
+    - uv run pre-commit run --color=always --all-files
+    - .gitlab/section-end "pre-commit"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+hadolint:
+  stage: static analysis
+  image:
+    name: hadolint/hadolint:latest-alpine
+    entrypoint: [ "" ]
+  script:
+    - hadolint Dockerfile
+  allow_failure: false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+linting-version:
+  stage: static analysis
+  script:
+    - |
+      PACKAGES="ruff"
+      for PACKAGE in $PACKAGES
+      do
+        PYPROJECT_VERSION=$(grep -oP $PACKAGE"==\K[0-9.]+" pyproject.toml) || true
+        PRE_COMMIT_VERSION=$(grep -B2 "id: $PACKAGE" .pre-commit-config.yaml | grep -oP "rev: v?\K[0-9.]+") || true
+
+        if [ ! -z $PYPROJECT_VERSION ] && [ ! -z $PRE_COMMIT_VERSION ] && [ $PYPROJECT_VERSION != $PRE_COMMIT_VERSION ]; then
+          echo "Version mismatch for $PACKAGE between pyproject.toml ($PYPROJECT_VERSION) and .pre-commit-config.yaml ($PRE_COMMIT_VERSION)."
+          exit 1
+        fi
+      done
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+code-owners:
+  stage: static analysis
+  before_script:
+    - uv sync --only-group ci
+  script:
+    - uv run .gitlab/assignees.py --verify
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+requirements:
+  stage: static analysis
+  script:
+    - .gitlab/section-start "uv lock" "uv lock --check" "collapsed"
+    - uv lock --check
+    - .gitlab/section-end "uv lock"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - pyproject.toml
+        - uv.lock
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+################################################################################
+### Test stage
+################################################################################
+
+build-dev:
+  stage: test
+  extends: .build-docker
+  variables:
+    target: dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+pytest:
+  stage: test
+  {% if include_database or include_redis %}
+  services:
+    {% if include_database %}
+    - name: postgres:16
+      alias: db
+    {% endif %}
+    {% if include_redis %}
+    - name: docker.dragonflydb.io/dragonflydb/dragonfly:v1.33.1
+      alias: redis
+    {% endif %}
+  {% endif %}
+  needs:
+    - build-dev
+  image: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA-dev
+  variables:
+    # TODO: Find a nicer way to make this work, extendable.
+    {% if include_database %}
+    POSTGRES_USER: testdb
+    POSTGRES_PASSWORD: dbpassword
+    POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db/${POSTGRES_USER}
+    {% endif %}
+    {% if include_redis %}
+    REDIS_DSN: redis://redis:6379
+    {% endif %}
+    {% if use_nats %}
+    NATS_SERVER_URL: "nats://nats:4222"
+    NATS_CONSUMER_NAME: "{{ service_name }}"
+    {% endif %}
+    {% if use_resgate %}
+    ENABLE_RESGATE: 0
+    {% endif %}
+    LOG_JSON: 0
+    TRACING: 0
+    REMOTE_TRACING: 0
+    SENTRY_DSN: ""
+  script:
+    - .gitlab/section-start "pytest" "python -m pytest --cov=service --junitxml=report.xml"
+    - python -m pytest --cov=service --junitxml=report.xml
+    - coverage xml
+    - .gitlab/section-end "pytest"
+  coverage: '/TOTAL.*\s+(\d+\%)/'
+  artifacts:
+    when: always
+    paths:
+      - coverage.xml
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+################################################################################
+### Build stage
+################################################################################
+
+cleanup-dev:
+  stage: build
+  image:
+    name: gcr.io/go-containerregistry/crane:debug
+    entrypoint: [""]
+  before_script:
+    - crane auth login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - crane delete "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHA}-dev" || true
+  when: always
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+build-prod:
+  stage: build
+  extends: .build-docker
+  variables:
+    target: prod
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+################################################################################
+### Staging stage
+################################################################################
+
+deploy-staging:
+  extends: .deploy
+  stage: staging
+  environment: staging
+  variables:
+    build_job: build-prod
+    regions: eu  # remove this line to deploy to all regions
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+deploy-staging-changelog:
+  extends: .deploy-changelog
+  stage: staging
+  needs:
+    - deploy-staging
+  environment: staging
+
+################################################################################
+### Production stage
+################################################################################
+
+deploy-production:
+  extends: .deploy
+  stage: production
+  when: manual
+  environment: production
+  variables:
+    build_job: build-prod
+    regions: eu  # remove this line to deploy to all regions
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+
+deploy-production-changelog:
+  extends: .deploy-changelog
+  stage: production
+  needs:
+    - deploy-production
+  environment: production
+
+################################################################################
+### Template update stage
+###
+### To create a new schedule in gitlab:
+### 1. Go to the project's page in gitlab
+### 2. On the side bar go to Builds -> Pipeline Schedules
+### 3. Click on "New schedule"
+### 4. Fill in the form with the following values:
+###    - Description: Template Update
+###    - Schedule: Every week or Every month (depending on your preference)
+###    - Cron timezone: Amsterdam
+###    - Target branch: main (or whatever your default branch is)
+###    - Variables: Nothing needed here
+###    - Activate: Yes
+### 5. Click on "Create pipeline schedule"
+### You can also run it manually by clicking on "Run pipeline schedule" on the pipeline schedule page.
+################################################################################
+
+template_update:
+  stage: template update
+  variables:
+    GIT_STRATEGY: clone
+  only:
+    - schedules
+  before_script:
+    # Install the copier tool, update package lists quietly, and install jq for JSON parsing.
+    - apt-get update -qq && apt-get install -y jq
+
+    # Set Template Auto Update user to global Git configuration for commits.
+    - git config --global user.email "$TEMPLATE_UPDATE_GIT_USERNAME@noreply.gitlab.wearespindle.com"
+    - git config --global user.name "Template Auto Update"
+    # Fetch the latest changes from the origin.
+    - git fetch origin
+    # Change the remote URL to use HTTPS with the access token.
+    - git remote set-url origin https://$TEMPLATE_UPDATE_GIT_USERNAME:$TEMPLATE_UPDATE_GIT_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git
+
+    # Set up SSH directory and permissions.
+    - mkdir ~/.ssh && chmod 700 ~/.ssh
+    # Set the permissions for the template SSH key.
+    - chmod 600 $PYTHON_TEMPLATE_SSH_KEY
+    # Configure SSH for the host with the template key to be able to clone the template using copier.
+    - |
+      echo "Host $CI_SERVER_HOST
+        IdentityFile $PYTHON_TEMPLATE_SSH_KEY
+        StrictHostKeyChecking no
+      " | tee ~/.ssh/config
+    # Set permissions for the SSH config file.
+    - chmod 600 ~/.ssh/config
+    - uv sync --only-group ci
+  script:
+    # Get the latest template tag using copier.
+    - LATEST_TEMPLATE_TAG=$(uv run --no-project copier update --conflict inline --trust --skip-answered --defaults --pretend 2>&1 | awk '{print $NF}')
+    - |
+      STARTING_TAG=$(grep "_commit: " .copier-answers.yml | awk '{print $NF}')
+    - |
+      TEMPLATE_GIT_REPO_URL=$(grep "_src_path: " .copier-answers.yml | awk '{print $NF}')
+    # Define branch name for the update, commit message, and merge request title.
+    - BRANCH_NAME=chore/template-update-$LATEST_TEMPLATE_TAG
+    - |
+      COMMIT_NAME="chore: template update $LATEST_TEMPLATE_TAG"
+    - MR_TITLE="Automated merge request for template update - $LATEST_TEMPLATE_TAG"
+
+    # We assumed that if a branch with this name already exists remotely then it already includes the latest template update.
+    - |
+      if git branch --list -r | grep -q "origin/$BRANCH_NAME" ; then
+        echo "Branch $BRANCH_NAME already exists, checking out."
+        exit 0
+      fi
+
+    - git checkout -b $BRANCH_NAME
+
+    # Update the template using copier.
+    - uv run --no-project copier update --conflict inline --trust --skip-answered --defaults
+    # Check for any changes from the main branch, exit if no changes.
+    - |
+      if [ -z "$(git diff --name-only origin/$CI_DEFAULT_BRANCH)" ]; then
+        echo "No changes detected from main, exiting job."
+        exit 0
+      fi
+
+    # Update the badges.
+    - uv run --no-project scripts/generate_badges.py || true
+
+      # We make a best effort to recreate the lock file to ensure that it is up to date.
+    - uv lock --upgrade || true
+
+    # Commit the changes, proceed even if no changes are present in the local branch.
+    - git add .
+    - git commit -m "$COMMIT_NAME"
+
+    # Force-push the changes to the remote branch.
+    - git push -f origin $BRANCH_NAME
+
+    # Check for existing merge requests with the same source branch, target branch, and state.
+    - |
+      MERGE_REQUESTS=$(curl --header "PRIVATE-TOKEN: $TEMPLATE_UPDATE_GIT_TOKEN" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests?source_branch=$BRANCH_NAME&target_branch=$CI_DEFAULT_BRANCH&state=opened")
+
+    # Create a merge request if it doesn't exist.
+    - |
+      if echo $MERGE_REQUESTS | grep -q "\"title\":\"$MR_TITLE\""; then
+          echo "A merge request with this title already exists."
+      else
+        # Assign random reviewer.
+        RANDOM_USER=$(uv run --no-project .gitlab/assignees.py --random-username)
+        RANDOM_USER_ID=$(uv run --no-project .gitlab/assignees.py --username-to-id $RANDOM_USER)
+
+        CURRENT_TAG=$(grep "_commit: " .copier-answers.yml | awk '{print $NF}')
+        git clone "$TEMPLATE_GIT_REPO_URL" /tmp/template
+        cd /tmp/template
+        git fetch --tags
+
+        # Get the commit history between the starting tag and the latest template tag excluding the merge commits.
+        # Separate "chore(deps)"-commits from the rest to highlight potentially more impactful commits.
+        HISTORY_WITHOUT_CHORE_DEPS=$(git log "$STARTING_TAG".."$CURRENT_TAG" --pretty=format:"- %s" | grep -v "Merge branch" | grep -v "chore(deps): " || true)
+        HISTORY_CHORE_DEPS=$(git log "$STARTING_TAG".."$CURRENT_TAG" --pretty=format:"- %s" | grep "chore(deps): " || true)
+
+        COMMIT_HISTORY="Our commits between $STARTING_TAG and $CURRENT_TAG:
+      "
+        COMMIT_HISTORY+="$HISTORY_WITHOUT_CHORE_DEPS
+
+      "
+        COMMIT_HISTORY+="Dependabot commits between $STARTING_TAG and $CURRENT_TAG:
+      "
+        COMMIT_HISTORY+="$HISTORY_CHORE_DEPS"
+
+        # We create a merge request.
+        JSON_DATA=$(curl --request POST --header "PRIVATE-TOKEN: $TEMPLATE_UPDATE_GIT_TOKEN" \
+          --data "source_branch=$BRANCH_NAME" \
+          --data "target_branch=$CI_DEFAULT_BRANCH" \
+          --data "title=$MR_TITLE" \
+          --data "description=$COMMIT_HISTORY" \
+          --data "remove_source_branch=true" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests")
+        IID=$(echo "$JSON_DATA" | jq -r '.iid')
+
+        # Set reviewer on created merge request.
+        if [[ $RANDOM_USER_ID =~ ^[0-9]+$ ]]; then
+          REVIEWER_ID=$RANDOM_USER_ID
+        else
+          REVIEWER_ID=$GITLAB_USER_ID
+        fi
+
+        curl --request PUT --header "PRIVATE-TOKEN: $TEMPLATE_UPDATE_GIT_TOKEN" \
+          --header "Content-Type: application/json" \
+          --data "{\"reviewer_ids\": [$REVIEWER_ID]}" \
+          "$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$IID"
+
+      fi

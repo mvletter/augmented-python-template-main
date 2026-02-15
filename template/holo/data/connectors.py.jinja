@@ -1,0 +1,253 @@
+{% if use_nats %}
+import asyncio
+import contextlib
+{% endif %}
+{% if use_nats or include_database or include_redis %}
+import logging
+{% if use_nats %}
+import ssl
+import tempfile
+from typing import Any
+
+from nats.errors import Error, UnexpectedEOF
+from nats.js.errors import ServiceUnavailableError
+{% else %}
+
+{% endif %}
+{% if include_redis %}
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+{% endif %}
+{% if include_database  %}
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+{% endif %}
+{% if include_redis %}
+from pydantic.networks import RedisDsn
+{% endif %}
+{% if include_redis %}
+from redis import asyncio as aioredis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError
+{% endif %}
+{% if include_database  %}
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.sql.expression import select, text
+{% endif %}
+
+from holo.config import config
+{% if include_database  %}
+from holo.config.database import DBConfig
+{% endif %}
+{% if use_nats %}
+from holo.config.nats import NatsConfig
+from holo.nats.client import HoloNats
+from holo.nats.protocol import NatsSubscriberProtocol
+{% endif %}
+from holo.utils import SingletonMeta
+{% endif %}
+{% if include_database  %}
+
+
+class DBConnector:
+    def __init__(self, db_config: DBConfig | None = None) -> None:
+        self.logger = logging.getLogger(f"{self.__module__}.{self.__class__.__name__}")
+
+        if db_config is None:
+            db_config = config.database
+
+        self.engine = create_async_engine(
+            db_config.DB_URL,
+            pool_size=20,
+            max_overflow=0,
+            pool_pre_ping=True,
+        )
+        if config.service.TRACING and not config.service.TESTING:
+            SQLAlchemyInstrumentor().instrument(
+                engine=self.engine.sync_engine,
+                enable_commenter=True,
+                commenter_options={},
+            )
+        self._session_maker = async_sessionmaker(self.engine, autoflush=True)
+
+    def new_session(self) -> AsyncSession:
+        self.logger.debug("New session for DB")
+        return self._session_maker()
+
+    async def check_connection(self) -> None:
+        session = self.new_session()
+        await session.execute(select(text("1 as is_alive")))
+        await session.close()
+
+
+class SingletonDBConnector(DBConnector, metaclass=SingletonMeta):
+    pass
+{% endif %}
+{% if include_redis  %}
+
+
+class RedisConnector:
+    def __init__(self, redis_dsn: RedisDsn | None = None) -> None:
+        self.logger = logging.getLogger(f"{self.__module__}.{self.__class__.__name__}")
+
+        if redis_dsn is None:
+            redis_dsn = config.redis.REDIS_DSN
+
+        self.retry = Retry(ExponentialBackoff(), 3)
+        self.connection_pool = aioredis.ConnectionPool.from_url(
+            str(redis_dsn),
+            decode_responses=True,
+            retry=self.retry,
+            retry_on_error=[ConnectionError],
+            retry_on_timeout=True,
+        )
+        if config.service.TRACING and not config.service.TESTING:
+            RedisInstrumentor().instrument()
+
+    def new_connection(self) -> aioredis.Redis:
+        self.logger.debug("New connection to Redis")
+        return aioredis.Redis(connection_pool=self.connection_pool)
+
+    async def check_connection(self) -> None:
+        conn = self.new_connection()
+        await conn.ping()
+        await conn.aclose()
+
+
+class SingletonRedisConnector(RedisConnector, metaclass=SingletonMeta):
+    pass
+{% endif %}
+{% if use_nats %}
+
+
+class NatsConnector:
+    def __init__(self, nats_config: NatsConfig | None = None) -> None:
+        self.logger = logging.getLogger(f"{self.__module__}.{self.__class__.__name__}")
+
+        if nats_config is None:
+            nats_config = config.nats
+
+        self.connection: HoloNats | None = None
+        self.reconnect_lock = asyncio.Lock()
+        self.server_urls = nats_config.NATS_SERVER_URL
+
+        self.subscribers: list[NatsSubscriberProtocol] = []
+        self.consumer_name = nats_config.NATS_CONSUMER_NAME
+
+        self.options: dict[str, Any] = {
+            "name": config.service.SERVICE_NAME,
+            "disconnected_cb": self.disconnected_callback,
+            "closed_cb": self.closed_callback,
+            "reconnected_cb": self.reconnected_callback,
+            "error_cb": self.error_callback,
+        }
+
+        # NATS_CREDS > NATS_CREDS_FILE.
+        creds = nats_config.NATS_CREDS and nats_config.NATS_CREDS.get_secret_value()
+        if creds:
+            with tempfile.NamedTemporaryFile(delete=False, mode="w") as tmp:
+                tmp.write(str(creds))
+                creds_file = tmp.name
+        else:
+            creds_file = nats_config.NATS_CREDS_FILE
+        if creds_file:
+            self.options["user_credentials"] = creds_file
+
+        # TEMP: connect to nats on internal endpoint, can be removed when TLS is disabled.
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        self.options["tls"] = ssl_ctx
+
+        # Lazy import to avoid circular dependencies. Import outside the if
+        # to catch errors even with tracing disabled.
+        from holo.opentelemetry.instrumentation.nats import NatsInstrumentor
+
+        if config.service.TRACING and not config.service.TESTING:
+            NatsInstrumentor().instrument()
+
+    def add_subscribers(self, subscribers: list[NatsSubscriberProtocol]) -> None:
+        self.subscribers += subscribers
+
+    async def startup(self) -> None:
+        self.logger.info("Starting NATS")
+        nc = await self.new_connection()
+
+        for subscriber in self.subscribers:
+            await subscriber.connect(nc, self.consumer_name)
+
+        for subscriber in self.subscribers:
+            await subscriber.start()
+
+    async def shutdown(self) -> None:
+        self.logger.info("Shutting down NATS")
+        if self.subscribers:
+            disconnect_tasks = [asyncio.create_task(subscriber.disconnect()) for subscriber in self.subscribers]
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.gather(*disconnect_tasks), timeout=2)
+
+        await self.close_connection()
+
+    async def reconnect(self) -> None:
+        async with self.reconnect_lock:
+            if self.connection and not self.connection.is_connected:
+                self.logger.info("Reconnecting NATS")
+                await self.shutdown()
+                await self.startup()
+
+    async def new_connection(self) -> HoloNats:
+        self.logger.debug("New connection to NATS")
+
+        self.connection = HoloNats()
+        await self.connection.connect(self.server_urls, **self.options)
+
+        self.logger.info(
+            "nats: discovered servers %s",
+            [ds.uri.netloc for ds in self.connection._server_pool if ds and ds.uri],
+        )
+        self.logger.info("nats: client connected to %s", self.connection.connected_url.netloc)
+
+        return self.connection
+
+    async def close_connection(self) -> None:
+        self.logger.debug("Closing connection to NATS")
+        if self.connection is not None and self.connection.is_connected:
+            await self.connection.close()
+            self.connection = None
+
+    async def check_connection(self) -> None:
+        if not self.connection:
+            raise Error("NATS is not connected, no known reason")
+
+        if not self.connection.is_connected:
+            raise Error(f"NATS is not connected, last error was: {self.connection.last_error}")
+
+    async def disconnected_callback(self) -> None:
+        """
+        This function is executed when there is a disconnection from NATS.
+        """
+        self.logger.warning("nats: server disconnected")
+
+    async def closed_callback(self) -> None:
+        """
+        This function is executed when client stops reconnection to NATS.
+        """
+        self.logger.warning("nats: connection closed")
+
+    async def reconnected_callback(self) -> None:
+        """
+        This function is executed when the client is reconnected.
+        """
+        self.logger.warning("nats: client reconnected to %s", self.connection.connected_url.netloc)
+
+    async def error_callback(self, exc: Exception) -> None:
+        """
+        This function is executed when the client encountered an errorr.
+        """
+        if isinstance(exc, UnexpectedEOF | ServiceUnavailableError):
+            self.logger.warning("nats: encountered error", exc_info=exc)
+        else:
+            self.logger.error("nats: encountered error", exc_info=exc)
+
+
+class SingletonNatsConnector(NatsConnector, metaclass=SingletonMeta):
+    pass
+{% endif %}

@@ -1,0 +1,29 @@
+import sys
+
+from pydantic import Field
+
+from holo.config.base import HoloSettings
+
+
+class ServiceConfig(HoloSettings):
+    SERVICE_NAME: str = "{{ service_name }}"
+    SENTRY_DSN: str
+    TRACING: bool
+    REMOTE_TRACING: bool
+    OTLP_ENDPOINT: str = ""
+    ENVIRONMENT: str = ""
+    HTTP_ENABLED: bool = Field(default=True)
+    APP_IMAGE_TAG: str = ""
+    AUTH_BASE_URL: str = ""
+    SENTRY_REDACTED_VARIABLES: set[str] = set()
+
+    @property
+    def PRODUCTION(self) -> bool:
+        return self.ENVIRONMENT == "production"
+
+    @property
+    def TESTING(self) -> bool:
+        return "pytest" in sys.argv[0]
+
+
+service_config = ServiceConfig()

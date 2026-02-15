@@ -1,0 +1,10 @@
+holodeck-service:
+  replicaCount: 1
+
+  envVars:
+    ENVIRONMENT:
+      value: staging
+  {% if use_nats %}
+    NATS_CONSUMER_NAME:
+      value: {{ service_name }}-staging
+  {% endif %}

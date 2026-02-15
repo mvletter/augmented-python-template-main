@@ -1,0 +1,30 @@
+from pydantic import ConfigDict
+
+from holo.config.base import HoloSettings
+
+
+class OpenapiConfig(HoloSettings):
+    TITLE: str = "{{ service_name }}"
+    DESCRIPTION: str = "{{ description }}"
+    VERSION: str = "0.1.0"
+    CONTACT_EMAIL: str = "dev@voys.nl"
+    CONTACT_NAME: str = "Voys"
+    CONTRACT_URL: str = "https://voys.nl/contact"
+    SERVERS: list[dict] = [
+        {
+            "url": "http://localhost:8000",
+            "description": "Local development",
+        },
+        {
+            "url": "https://api.eu-production.holodeck.voys.nl/{{ service_name }}/",
+            "description": "Production",
+        },
+        {
+            "url": "https://api.eu-staging.holodeck.voys.nl/{{ service_name }}/",
+            "description": "Staging",
+        },
+    ]
+    TAGS: list[dict] = []
+    AUDIENCE: str = "company-internal"  # TODO: Enum.
+
+    model_config = ConfigDict(env_prefix="OPENAPI_")

@@ -1,0 +1,170 @@
+{% if use_nats %}
+import asyncio
+import sys
+import traceback
+from collections import defaultdict
+from contextlib import suppress
+from datetime import datetime
+
+{% endif%}
+{% if include_database %}
+from holo.config import config
+{% endif %}
+{% if use_nats %}
+from holo.nats.metrics import EVENTS
+{% endif%}
+from service.lifespan.staging import Lifespan as StagingLifespan
+{% if include_database %}
+
+
+try:
+    from service.monitoring.sql import SqlMonitor
+except ImportError:
+    SqlMonitor = None
+{% endif %}
+{% if use_nats %}
+
+
+def get_metrics() -> dict[str, int]:
+    """
+    Turn EVENTS into a simpler dict.
+    """
+    result = {}
+    metrics = EVENTS.collect()
+    for metric in metrics:
+        for sample in metric.samples:
+            if sample.name.endswith("_total"):
+                label = ".".join(
+                    [
+                        sample.labels["subject"],
+                        sample.labels["eventtype"],
+                        sample.labels["version"],
+                    ],
+                )
+                if label is not None:
+                    result[label] = sample.value
+    return result
+
+
+async def nats_monitor() -> None:
+    r"""
+    Whether or not NATS handlers process any messages is unclear. This brings
+    details about processed NATS events to the terminal.
+
+    Note: because it uses \r, this only works when using docker compose run,
+    not docker compose up.
+    """
+    ansi_clear = "\033[K"
+    idle_interval = 30
+
+    last_change_time = datetime.now().replace(microsecond=0)
+    last_switch_time = None  # switching from no change to change
+    total_event_count = 0
+    subjects = set()
+    subject_counts = []
+
+    # This will update in the loop as we calculate the differences
+    # between cycles.
+    previous: dict[str, int] | None = None
+    counters: dict[str, int] = defaultdict(int)
+    while True:
+        await asyncio.sleep(1)
+
+        now = datetime.now().replace(microsecond=0)
+
+        # Read events data from the prometheus metrics Counter.
+        current = get_metrics()
+        count_changes = previous and {
+            subject: int(count - previous.get(subject, 0))
+            for subject, count in current.items()
+            if int(previous.get(subject, 0)) != count
+        }
+
+        # There are 3 prints:
+        # 1: nothing happened for x amount of time
+        # 2: total processed count + all subjects with individual counts
+        # 3: after the time of 2 without changes, we print \n and go back to 1
+        msg = None
+
+        if count_changes:
+            for subject, count_delta in count_changes.items():
+                subjects.add(subject)
+                total_event_count += count_delta
+                counters[subject] += count_delta
+            subject_counts = [f"{subject} ({int(counters[subject])})" for subject in sorted(subjects)]
+            msg = f"\r{total_event_count} NATS events since {last_change_time or now:%H:%M:%S} [ {' '.join(subject_counts)} ]"
+
+            # To break from the 'No NATS events for ..' message we use \n.
+            last_change_time = now
+            if last_switch_time is None:
+                last_switch_time = now
+                msg = f"\n{msg}"
+        else:
+            if last_switch_time:
+                if (now - last_change_time).total_seconds() >= idle_interval:
+                    # Reset.
+                    last_switch_time = None
+                    total_event_count = 0
+                    subjects = set()
+                    counters.clear()
+
+                    # Break from the last count message, the next cycle
+                    # it will print the delta again.
+                    msg = "\nNo NATS events for .."
+            else:
+                delta = now - last_change_time
+                msg = f"\rNo NATS events for .. {str(delta)}"
+
+        if msg:
+            if msg.startswith("\r"):
+                sys.stdout.write(f"\r{ansi_clear}")
+                sys.stdout.flush()
+            sys.stdout.write(msg)
+            sys.stdout.flush()
+
+        previous = current.copy()
+
+
+def log_task_errors(task: asyncio.Task) -> None:
+    """
+    Helper function to print a stacktrace if `task` crashed.
+    """
+    exc = not task.cancelled() and task.exception()
+    if exc:
+        traceback.print_exception(exc)
+{% endif %}
+
+
+class Lifespan(StagingLifespan):
+    async def start(self) -> None:
+        await super().start()
+        {% if include_database %}
+
+        if SqlMonitor:
+            SqlMonitor.init(config.database.SQL_MONITOR)
+        {% endif %}
+        {% if use_nats %}
+
+        self.nats_monitor_task = None
+        if sys.stdout.isatty():
+            self.nats_monitor_task = asyncio.create_task(nats_monitor())
+            self.nats_monitor_task.add_done_callback(log_task_errors)
+        {% endif %}
+
+    async def stop(self) -> None:
+        await super().stop()
+        {% if include_database %}
+
+        if SqlMonitor:
+            SqlMonitor.summarize(
+                config.database.SQL_SUMMARY_FILE,
+                config.database.SQL_SUMMARY_FILE_OVERWRITE,
+            )
+        {% endif %}
+        {% if use_nats %}
+
+        if self.nats_monitor_task and not self.nats_monitor_task.done():
+            self.nats_monitor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.nats_monitor_task
+        {% endif %}

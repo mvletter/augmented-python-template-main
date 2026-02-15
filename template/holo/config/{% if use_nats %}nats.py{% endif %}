@@ -1,0 +1,11 @@
+from pydantic import Field, SecretStr
+
+from holo.config.base import HoloSettings
+
+
+class NatsConfig(HoloSettings):
+    NATS_SERVER_URL: str
+    NATS_CREDS: SecretStr | None = SecretStr("")
+    NATS_CREDS_FILE: str | None = ""
+    NATS_CONSUMER_NAME: str
+    ENABLED: bool = Field(default=True, validation_alias="NATS_ENABLED")

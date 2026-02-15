@@ -1,0 +1,23 @@
+from pydantic.networks import PostgresDsn
+from sqlalchemy.engine import URL as DBUrl, make_url
+
+from holo.config.base import HoloSettings
+
+
+class DBConfig(HoloSettings):
+    POSTGRES_DSN: PostgresDsn
+    POSTGRES_DRIVER: str = "postgresql+asyncpg"
+
+    @property
+    def DB_URL(self) -> DBUrl:
+        url = make_url(str(self.POSTGRES_DSN))
+        url = url.set(drivername=self.POSTGRES_DRIVER)
+        return url
+
+    SQL_MONITOR: str = ""  # eg. 'statement,summary,request' to monitor these
+    SQL_SUMMARY_FILE: str = ""
+    SQL_SUMMARY_FILE_OVERWRITE: bool = False
+
+
+class MigrationsConfig(HoloSettings):
+    MANAGED_MODELS: list[str] = ["service.data.models"]

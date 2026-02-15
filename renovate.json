@@ -1,0 +1,110 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "assignees": [
+    "renovatebot"
+  ],
+  "assigneesFromCodeOwners": false,
+  "automerge": true,
+  "commitMessagePrefix": "chore(deps): ",
+  "enabledManagers": [
+    "pep621",
+    "pre-commit",
+    "regex"
+  ],
+  "labels": [
+    "dependencies",
+    "python"
+  ],
+  "packageRules": [
+    {
+      "commitMessageTopic": "dependency ruff",
+      "groupName": "ruff",
+      "matchPackageNames": [
+        "ruff"
+      ],
+      "matchSourceUrls": [
+        "https://github.com/astral-sh/ruff-pre-commit"
+      ]
+    },
+    {
+      "commitMessageTopic": "Python",
+      "groupName": "Python version",
+      "matchPackageNames": [
+        "ghcr.io/astral-sh/uv"
+      ],
+      "postUpgradeTasks": {
+        "commands": [
+          "uv lock"
+        ],
+        "executionMode": "branch",
+        "fileFilters": [
+          "uv.lock"
+        ]
+      }
+    },
+    {
+      "commitMessageTopic": "Debian",
+      "groupName": "Debian version",
+      "matchPackageNames": [
+        "debian"
+      ]
+    }
+  ],
+  "rebaseWhen": "behind-base-branch",
+  "regexManagers": [
+    {
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/astral-sh/uv",
+      "extractVersionTemplate": "^python(?<version>\\d+\\.\\d+)",
+      "fileMatch": [
+        "^Dockerfile$",
+        "^template/Dockerfile$"
+      ],
+      "matchStrings": [
+        "ARG PYTHON_VERSION=(?<currentValue>\\d+\\.\\d+)"
+      ],
+      "packageNameTemplate": "ghcr.io/astral-sh/uv"
+    },
+    {
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/astral-sh/uv",
+      "extractVersionTemplate": "^python(?<version>\\d+\\.\\d+)",
+      "fileMatch": [
+        "^\\.gitlab-ci\\.yml$",
+        "^template/\\.gitlab-ci\\.yml\\.jinja$"
+      ],
+      "matchStrings": [
+        "PYTHON_VERSION:\\s*[\"'](?<currentValue>\\d+\\.\\d+)[\"']"
+      ],
+      "packageNameTemplate": "ghcr.io/astral-sh/uv"
+    },
+    {
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "debian",
+      "fileMatch": [
+        "^Dockerfile$",
+        "^template/Dockerfile$"
+      ],
+      "matchStrings": [
+        "ARG OS_CODENAME=(?<currentValue>[a-z]+)"
+      ],
+      "packageNameTemplate": "debian",
+      "versioningTemplate": "debian"
+    },
+    {
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "debian",
+      "fileMatch": [
+        "^\\.gitlab-ci\\.yml$",
+        "^template/\\.gitlab-ci\\.yml\\.jinja$"
+      ],
+      "matchStrings": [
+        "OS_CODENAME:\\s*[\"'](?<currentValue>[a-z]+)[\"']"
+      ],
+      "packageNameTemplate": "debian",
+      "versioningTemplate": "debian"
+    }
+  ],
+  "reviewersFromCodeOwners": true,
+  "reviewersSampleSize": 1
+}

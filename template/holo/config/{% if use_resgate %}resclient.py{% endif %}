@@ -1,0 +1,5 @@
+from holo.config.base import HoloSettings
+
+
+class ResgateConfig(HoloSettings):
+    ENABLE_RESGATE: bool
