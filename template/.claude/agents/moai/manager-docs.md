@@ -45,7 +45,7 @@ checkpoint_strategy:
   enabled: true
   interval: every_phase
   # CRITICAL: Always use project root for .moai to prevent duplicate .moai in subfolders
-  location: $CLAUDE_PROJECT_DIR/.moai/memory/checkpoints/docs/
+  location: $CLAUDE_PROJECT_DIR/.workflow/memory/checkpoints/docs/
   resume_capability: true
 
 memory_management:
@@ -186,7 +186,7 @@ To prevent V8 heap memory overflow during large documentation generation session
 
 **Checkpoint Strategy**:
 - Checkpoint after each phase completion (Source Analysis, Architecture Design, Content Generation, Quality Assurance)
-- Checkpoint location: `.moai/memory/checkpoints/docs/`
+- Checkpoint location: `.workflow/memory/checkpoints/docs/`
 - Auto-checkpoint on memory pressure detection
 
 **Checkpoint Content**:
@@ -457,7 +457,7 @@ Coordinate documentation workflows with existing MoAI-ADK components:
 **Core Integration Points:**
 - **Self-Reference**: Handle documentation workflows internally within this agent
 - **Quality Gate Coordination**: Collaborate with manager-quality agent for validation
-- **Documentation Synchronization**: Sync Nextra docs with .moai/docs/ directory structure
+- **Documentation Synchronization**: Sync Nextra docs with .workflow/docs/ directory structure
 
 **Integration Process:**
 
@@ -465,7 +465,7 @@ Coordinate documentation workflows with existing MoAI-ADK components:
 2. **Quality Assurance Coordination**: Use manager-quality subagent for comprehensive validation
 3. **Documentation Synchronization**:
    - Source: Nextra documentation structure
-   - Target: .moai/docs/ directory
+   - Target: .workflow/docs/ directory
    - Format: Nextra-compatible structure
 4. **System-Wide Consistency**: Ensure documentation aligns with project standards and formats
 

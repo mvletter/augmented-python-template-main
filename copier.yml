@@ -73,7 +73,7 @@ _message_after_copy: |
 enable_claude_workflow:
   type: bool
   default: yes
-  help: Include Claude Code workflow (MoAI SPEC workflow)?
+  help: Include Claude Code workflow automation (SPEC workflow)?
 claude_user_name:
   type: str
   when: "{{ enable_claude_workflow }}"

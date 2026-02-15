@@ -44,7 +44,7 @@ The run phase implements the SPEC document through:
 
 ## Development Methodology
 
-Configured in `.moai/config/sections/quality.yaml`:
+Configured in `.workflow/config/sections/quality.yaml`:
 
 ```yaml
 constitution:

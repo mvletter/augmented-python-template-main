@@ -1,4 +1,4 @@
-# MoAI SPEC Workflow Guide
+# SPEC Workflow Guide
 
 Structured development workflow for feature implementation using specification-driven approach.
 
@@ -20,7 +20,7 @@ The SPEC workflow is a three-phase development methodology:
 
 The manager-spec agent will:
 - Analyze requirements
-- Create SPEC document at `.moai/specs/SPEC-001/spec.md`
+- Create SPEC document at `.workflow/specs/SPEC-001/spec.md`
 - Define acceptance criteria
 - Map technical approach
 
@@ -81,7 +81,7 @@ The SPEC workflow uses **Hybrid mode** by default:
   - PRESERVE: Create safety net
   - IMPROVE: Transform incrementally
 
-Configuration in `.moai/config/sections/quality.yaml`:
+Configuration in `.workflow/config/sections/quality.yaml`:
 ```yaml
 constitution:
   development_mode: hybrid
@@ -125,7 +125,7 @@ See individual phase documentation:
 # 1. Create SPEC for new feature
 /plan "Add email notification system with templates"
 
-# Review generated SPEC at .moai/specs/SPEC-002/spec.md
+# Review generated SPEC at .workflow/specs/SPEC-002/spec.md
 # Make any requested changes
 # Approve SPEC
 
@@ -169,7 +169,7 @@ This workflow uses three specialized agents:
 
 ### Quality Settings
 
-`.moai/config/sections/quality.yaml`:
+`.workflow/config/sections/quality.yaml`:
 - Development mode (hybrid, ddd, tdd)
 - Coverage thresholds
 - TRUST 5 enforcement
@@ -177,14 +177,14 @@ This workflow uses three specialized agents:
 
 ### Language Settings
 
-`.moai/config/sections/language.yaml`:
+`.workflow/config/sections/language.yaml`:
 - Conversation language (en, nl, ko, etc.)
 - Code comment language
 - Documentation language
 
 ### User Settings
 
-`.moai/config/sections/user.yaml`:
+`.workflow/config/sections/user.yaml`:
 - User name for commits
 - Preferences
 

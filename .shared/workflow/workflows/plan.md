@@ -21,7 +21,7 @@ The plan phase creates a structured SPEC document that defines:
    - Analyzes requirements
    - Maps domain boundaries
    - Defines acceptance criteria
-   - Creates `.moai/specs/SPEC-XXX/spec.md`
+   - Creates `.workflow/specs/SPEC-XXX/spec.md`
 
 3. **Review and Approval**
    - User reviews generated SPEC
@@ -42,7 +42,7 @@ The plan phase creates a structured SPEC document that defines:
 
 ## Output
 
-SPEC document at `.moai/specs/SPEC-XXX/spec.md` containing:
+SPEC document at `.workflow/specs/SPEC-XXX/spec.md` containing:
 - Executive summary
 - EARS format requirements
 - Acceptance criteria

@@ -18,7 +18,7 @@ Creates a comprehensive SPEC document using EARS format before implementation.
 Delegates to the manager-spec agent which will:
 1. Analyze the feature requirements
 2. Map domain boundaries and dependencies
-3. Create SPEC document at `.moai/specs/SPEC-XXX/spec.md`
+3. Create SPEC document at `.workflow/specs/SPEC-XXX/spec.md`
 4. Define acceptance criteria
 5. Outline technical approach
 
@@ -33,7 +33,7 @@ Delegates to the manager-spec agent which will:
 After reviewing and approving the SPEC:
 ```
 /clear
-/run SPEC-XXX
+/implement SPEC-XXX
 ```
 
-See `../.shared/moai/README.md` for complete workflow guide.
+See `../.shared/workflow/README.md` for complete workflow guide.

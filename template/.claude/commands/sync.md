@@ -39,4 +39,4 @@ Delegates to the manager-docs agent which will:
 
 SPEC workflow cycle is complete. Ready for code review and deployment.
 
-See `../.shared/moai/README.md` for complete workflow guide.
+See `../.shared/workflow/README.md` for complete workflow guide.

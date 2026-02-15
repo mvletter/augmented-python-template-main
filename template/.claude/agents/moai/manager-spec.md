@@ -245,7 +245,7 @@ IMPACT: Non-EARS requirements create implementation ambiguity and testing gaps.
 
 ## Core Mission (Hybrid Expansion)
 
-- Read `.moai/project/{product,structure,tech}.md` and derive feature candidates.
+- Read `.workflow/project/{product,structure,tech}.md` and derive feature candidates.
 - Generate output suitable for Personal/Team mode through `/moai:1-plan` command.
 - NEW: Intelligent system SPEC quality improvement through verification
 - NEW: EARS specification + automatic verification integration
@@ -257,7 +257,7 @@ IMPACT: Non-EARS requirements create implementation ambiguity and testing gaps.
 2. Candidate analysis: Extracts key bullets from Product/Structure/Tech documents and suggests feature candidates.
 3. Output creation:
 
-- Personal mode → Create 3 files in `.moai/specs/SPEC-{ID}/` directory (Required: `SPEC-` prefix + TAG ID):
+- Personal mode → Create 3 files in `.workflow/specs/SPEC-{ID}/` directory (Required: `SPEC-` prefix + TAG ID):
 - `spec.md`: EARS format specification (Environment, Assumptions, Requirements, Specifications)
 - `plan.md`: Implementation plan, milestones, technical approach
 - `acceptance.md`: Detailed acceptance criteria, test scenarios, Given-When-Then Format
@@ -421,19 +421,19 @@ Manual specification method:
 
 ### Document Type Decision Matrix
 
-Before creating any document in `.moai/specs/`, verify it belongs there:
+Before creating any document in `.workflow/specs/`, verify it belongs there:
 
 | Document Type     | Directory                          | ID Format                 | Required Files                  |
 | ----------------- | ---------------------------------- | ------------------------- | ------------------------------- |
-| SPEC (Feature)    | `.moai/specs/SPEC-{DOMAIN}-{NUM}/` | `SPEC-AUTH-001`           | spec.md, plan.md, acceptance.md |
-| Report (Analysis) | `.moai/reports/{TYPE}-{DATE}/`     | `REPORT-SECURITY-2025-01` | report.md                       |
-| Documentation     | `.moai/docs/`                      | N/A                       | {name}.md                       |
+| SPEC (Feature)    | `.workflow/specs/SPEC-{DOMAIN}-{NUM}/` | `SPEC-AUTH-001`           | spec.md, plan.md, acceptance.md |
+| Report (Analysis) | `.workflow/reports/{TYPE}-{DATE}/`     | `REPORT-SECURITY-2025-01` | report.md                       |
+| Documentation     | `.workflow/docs/`                      | N/A                       | {name}.md                       |
 
 ### Classification Algorithm
 
 [HARD] Pre-Creation Classification Requirement:
 
-Before writing ANY file to `.moai/specs/`, execute this classification:
+Before writing ANY file to `.workflow/specs/`, execute this classification:
 
 Step 1: Analyze Document Purpose
 
@@ -455,8 +455,8 @@ Step 3: Detect SPEC Indicators
 
 Step 4: Apply Routing Decision
 
-- IF Report: Create in `.moai/reports/{TYPE}-{YYYY-MM}/`
-- IF Documentation: Create in `.moai/docs/`
+- IF Report: Create in `.workflow/reports/{TYPE}-{YYYY-MM}/`
+- IF Documentation: Create in `.workflow/docs/`
 - IF SPEC: Continue to SPEC creation with validation
 
 ### Report Creation Guidelines
@@ -465,9 +465,9 @@ When document is classified as Report (NOT SPEC):
 
 [HARD] Report Directory Structure:
 
-- Path: `.moai/reports/{REPORT-TYPE}-{YYYY-MM}/`
-- Example: `.moai/reports/security-audit-2025-01/`
-- Example: `.moai/reports/performance-analysis-2025-01/`
+- Path: `.workflow/reports/{REPORT-TYPE}-{YYYY-MM}/`
+- Example: `.workflow/reports/security-audit-2025-01/`
+- Example: `.workflow/reports/performance-analysis-2025-01/`
 
 [HARD] Report Naming Convention:
 
@@ -483,7 +483,7 @@ When document is classified as Report (NOT SPEC):
 
 ### Migration: Misclassified Files
 
-When encountering a Report in `.moai/specs/`:
+When encountering a Report in `.workflow/specs/`:
 
 Step 1: Identify misclassified file
 
@@ -492,13 +492,13 @@ Step 1: Identify misclassified file
 
 Step 2: Create correct destination
 
-- Create `.moai/reports/{TYPE}-{DATE}/` directory
+- Create `.workflow/reports/{TYPE}-{DATE}/` directory
 
 Step 3: Move content
 
 - Copy content to new location
 - Update any references
-- Remove from `.moai/specs/`
+- Remove from `.workflow/specs/`
 
 Step 4: Update tracking
 
@@ -517,31 +517,31 @@ The following file patterns are BLOCKED and must NEVER be created:
 
 Blocked Pattern 1: Single SPEC file in specs root
 
-- Pattern: `.moai/specs/SPEC-*.md`
-- Example: `.moai/specs/SPEC-AUTH-001.md` (BLOCKED)
-- Correct: `.moai/specs/SPEC-AUTH-001/spec.md`
+- Pattern: `.workflow/specs/SPEC-*.md`
+- Example: `.workflow/specs/SPEC-AUTH-001.md` (BLOCKED)
+- Correct: `.workflow/specs/SPEC-AUTH-001/spec.md`
 
 Blocked Pattern 2: Non-standard directory names
 
-- Pattern: `.moai/specs/{name}/` without SPEC- prefix
-- Example: `.moai/specs/auth-feature/` (BLOCKED)
-- Correct: `.moai/specs/SPEC-AUTH-001/`
+- Pattern: `.workflow/specs/{name}/` without SPEC- prefix
+- Example: `.workflow/specs/auth-feature/` (BLOCKED)
+- Correct: `.workflow/specs/SPEC-AUTH-001/`
 
 Blocked Pattern 3: Missing required files
 
 - Pattern: Directory with only spec.md
-- Example: `.moai/specs/SPEC-AUTH-001/spec.md` alone (BLOCKED)
+- Example: `.workflow/specs/SPEC-AUTH-001/spec.md` alone (BLOCKED)
 - Correct: Must have spec.md + plan.md + acceptance.md
 
 ### Enforcement Mechanism
 
 [HARD] Pre-Write Validation:
 
-Before any Write/Edit operation to `.moai/specs/`:
+Before any Write/Edit operation to `.workflow/specs/`:
 
 Check 1: Verify target is inside a SPEC-{DOMAIN}-{NUM} directory
 
-- Reject if target is directly in `.moai/specs/`
+- Reject if target is directly in `.workflow/specs/`
 - Reject if directory name doesn't match `SPEC-{DOMAIN}-{NUM}`
 
 Check 2: Verify all required files will exist after operation
@@ -561,8 +561,8 @@ When flat file creation is attempted:
 ```
 ❌ SPEC Creation Blocked: Flat file detected
 
-Attempted: .moai/specs/SPEC-AUTH-001.md
-Required:  .moai/specs/SPEC-AUTH-001/
+Attempted: .workflow/specs/SPEC-AUTH-001.md
+Required:  .workflow/specs/SPEC-AUTH-001/
            ├── spec.md
            ├── plan.md
            └── acceptance.md
@@ -641,7 +641,7 @@ Perform the following checks before writing a SPEC document:
 
 **1. Verify Directory Name Format:**
 
-- [HARD] Ensure directory follows format: `.moai/specs/SPEC-{ID}/`
+- [HARD] Ensure directory follows format: `.workflow/specs/SPEC-{ID}/`
   WHY: Standardized format enables automated directory scanning and duplicate prevention
   IMPACT: Non-standard format breaks downstream automation and duplicate detection
 
@@ -677,7 +677,7 @@ Perform the following checks before writing a SPEC document:
 
 ### Required Checklist
 
-- [HARD] Directory name verification: Verify compliance with `.moai/specs/SPEC-{ID}/` format
+- [HARD] Directory name verification: Verify compliance with `.workflow/specs/SPEC-{ID}/` format
   WHY: Format compliance enables downstream automation and tool integration
   IMPACT: Non-compliance breaks automation and manual verification becomes necessary
 
@@ -788,14 +788,14 @@ When this agent receives a request from MoAI to create a SPEC, it loads the docu
 
 Step 1: Required documents (Always loaded):
 
-- `.moai/project/product.md` - Business requirements, user stories
-- `.moai/config.json` - Check project mode (Personal/Team)
+- `.workflow/project/product.md` - Business requirements, user stories
+- `.workflow/config.json` - Check project mode (Personal/Team)
 - moai-foundation-core (auto-loaded from YAML frontmatter) - Contains SPEC metadata structure standards
 
 Step 2: Conditional document (Load on demand):
 
-- `.moai/project/structure.md` - When architecture design is required
-- `.moai/project/tech.md` - When technology stack selection/change is required
+- `.workflow/project/structure.md` - When architecture design is required
+- `.workflow/project/tech.md` - When technology stack selection/change is required
 - Existing SPEC files - Similar functions If you need a reference
 
 Step 3: Reference documentation (if required during SPEC creation):
@@ -909,9 +909,9 @@ Analysis:
 
 Created Files:
 
-- .moai/specs/SPEC-001/spec.md (EARS format)
-- .moai/specs/SPEC-001/requirements.md
-- .moai/specs/SPEC-001/acceptance-criteria.md
+- .workflow/specs/SPEC-001/spec.md (EARS format)
+- .workflow/specs/SPEC-001/requirements.md
+- .workflow/specs/SPEC-001/acceptance-criteria.md
 
 Quality Verification:
 

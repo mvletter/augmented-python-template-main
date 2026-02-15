@@ -1,16 +1,16 @@
 ---
-name: run
+name: implement
 description: Implement SPEC using DDD methodology
 ---
 
-# /run - Implement SPEC
+# /implement - Implement SPEC
 
 Implements a SPEC document using Domain-Driven Development (DDD) methodology.
 
 ## Usage
 
 ```
-/run SPEC-XXX
+/implement SPEC-XXX
 ```
 
 ## What It Does
@@ -35,7 +35,7 @@ Delegates to the manager-ddd agent which executes:
 ## Example
 
 ```
-/run SPEC-001
+/implement SPEC-001
 ```
 
 ## Success Criteria
@@ -52,4 +52,4 @@ After implementation complete:
 /sync SPEC-XXX
 ```
 
-See `../.shared/moai/README.md` for complete workflow guide.
+See `../.shared/workflow/README.md` for complete workflow guide.
