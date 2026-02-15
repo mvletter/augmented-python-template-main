@@ -148,30 +148,41 @@ Key principle: Use cases contain pure business logic, isolated from infrastructu
 - **Commands**: `service/commands/` - CLI commands via `manage.py`
 - **Tests**: `service/*/tests/` - Unit and integration tests
 
-## SPEC Workflow
+## Workflow Commands
 
-This project uses SPEC-based development for structured feature work.
+Simple commands to help you build features step by step.
 
-### Commands
+### The Commands
 
-- `/plan "feature description"` - Create SPEC document
-- `/implement SPEC-XXX` - Implement SPEC with DDD
-- `/sync SPEC-XXX` - Generate docs and create PR
+- `/plan` - Plan what you're building (creates a spec)
+- `/implement` - Build it step by step
+- `/finish` - Wrap up, document, and learn from what happened
+- `/refactor` - Clean up code (optional, can run anytime)
+- `/retro` - Learn from bugs (when fixing takes >30 minutes)
 
-### When to Use
+### When to Use the Full Workflow
 
-**SPEC workflow (recommended for):**
-- Multi-developer features
-- Features requiring handoff
-- Major architectural changes
-- Features >2 days work
+**Use /plan → /implement → /finish for:**
+- Features that take more than a day
+- Work you might hand off to someone else
+- Big changes to how things work
+- Anything you want documented properly
 
-**Ad-hoc workflow:**
+**Skip the workflow for:**
 - Quick bug fixes
-- Single-file changes
-- Exploratory coding
+- Changing one file
+- Trying stuff out
 
-See `../.shared/workflow/README.md` for full SPEC workflow guide.
+### Naming Your Work
+
+Instead of "SPEC-XXX-001", just describe what you're building:
+- "user-login" not "SPEC-AUTH-001"
+- "payment-flow" not "SPEC-PAYMENT-001"
+- "email-notifications" not "SPEC-EMAIL-001"
+
+Keep it simple and human-readable.
+
+See `../.shared/workflow/README.md` for more details.
 
 ## Core Rules
 
